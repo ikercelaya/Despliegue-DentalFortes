@@ -1,0 +1,20 @@
+{
+  "name": "dental-fortes-crm",
+  "version": "1.0.0",
+  "description": "CRM clínico de Dental Fortes — gestión de pacientes, agenda, conversaciones y reseñas. Preparado para integrar chatbot Web + WhatsApp.",
+  "main": "server.js",
+  "scripts": {
+    "check": "node --check server.js",
+    "start": "node server.js"
+  },
+  "keywords": ["crm", "dental", "clinica", "supabase", "vercel"],
+  "author": "Propulsa",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.0",
+    "bcryptjs": "^2.4.3",
+    "dotenv": "^17.4.2",
+    "express": "^4.19.2"
+  }
+}

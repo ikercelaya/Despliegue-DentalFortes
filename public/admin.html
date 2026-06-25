@@ -1,0 +1,1376 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Dental Fortes · CRM</title>
+  <link rel="icon" type="image/svg+xml" href="/logo.svg" />
+  <style>
+    :root {
+      --bg: #1a1a1a;
+      --bg-2: #232323;
+      --bg-3: #2d2d2d;
+      --bg-4: #3a3a3a;
+      --line: #3d3d3d;
+      --line-2: #4a4a4a;
+      --text: #f0f0f0;
+      --text-2: #b8b8b8;
+      --text-3: #888888;
+      --accent: #c8c8c8;
+      --accent-2: #a8a8a8;
+      --silver: linear-gradient(135deg, #d9d9d9 0%, #9b9b9b 100%);
+      --success: #4ade80;
+      --warn: #fbbf24;
+      --danger: #f87171;
+      --info: #60a5fa;
+      --pending: #94a3b8;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      font-size: 14px;
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+    }
+    button, input, select, textarea { font-family: inherit; font-size: inherit; }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    /* ===== LOGIN ===== */
+    .login {
+      min-height: 100vh; display: grid; place-items: center; padding: 20px;
+      background: radial-gradient(circle at 30% 20%, #2a2a2a 0%, #1a1a1a 60%, #0d0d0d 100%);
+    }
+    .login-card {
+      background: var(--bg-3); padding: 36px 32px; border-radius: 14px;
+      box-shadow: 0 24px 60px rgba(0,0,0,0.55), 0 0 0 1px var(--line);
+      width: min(380px, 100%); text-align: center;
+    }
+    .login-card .logo { margin: 0 auto 22px; width: 200px; }
+    .login-card .logo img { width: 100%; display: block; border-radius: 6px; }
+    .login-card h1 {
+      margin: 0 0 4px; font-size: 18px; font-weight: 500; color: var(--text);
+      letter-spacing: 1.5px; text-transform: uppercase;
+    }
+    .login-card .subtitle { margin: 0 0 26px; color: var(--text-3); font-size: 13px; }
+    .login-card form { display: flex; flex-direction: column; gap: 12px; text-align: left; }
+    .login-card label { font-size: 12px; font-weight: 600; color: var(--text-2); text-transform: uppercase; letter-spacing: 0.5px; }
+    .login-card input {
+      background: var(--bg-2); border: 1px solid var(--line); color: var(--text);
+      border-radius: 8px; padding: 12px 14px;
+    }
+    .login-card input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(200,200,200,0.1); }
+    .login-card button {
+      background: var(--silver); color: #1a1a1a; border: 0; border-radius: 8px;
+      padding: 12px 14px; font-weight: 700; cursor: pointer; margin-top: 4px;
+      letter-spacing: 0.5px; text-transform: uppercase; font-size: 13px;
+      transition: filter 0.15s;
+    }
+    .login-card button:hover { filter: brightness(1.1); }
+    .login-card .err { color: var(--danger); font-size: 13px; background: rgba(248,113,113,0.1); padding: 10px; border-radius: 6px; text-align: center; }
+
+    /* ===== LAYOUT ===== */
+    .app { display: grid; grid-template-columns: 240px 1fr; height: 100vh; }
+    .sidebar {
+      background: var(--bg-3); border-right: 1px solid var(--line);
+      display: flex; flex-direction: column; overflow: hidden;
+    }
+    .sb-top {
+      padding: 16px 18px; border-bottom: 1px solid var(--line);
+      display: flex; align-items: center; gap: 10px;
+    }
+    .sb-top img { height: 32px; width: auto; max-width: 100%; }
+    .sb-nav { flex: 1; overflow-y: auto; padding: 12px 8px; }
+    .nav-item {
+      display: flex; align-items: center; gap: 10px; padding: 10px 12px;
+      border-radius: 8px; cursor: pointer; color: var(--text-2);
+      font-size: 13.5px; font-weight: 500; margin-bottom: 2px;
+      transition: background 0.12s, color 0.12s;
+    }
+    .nav-item:hover { background: var(--bg-4); color: var(--text); }
+    .nav-item.active { background: var(--bg-4); color: var(--text); border-left: 3px solid var(--accent); padding-left: 9px; }
+    .nav-item svg { width: 16px; height: 16px; flex-shrink: 0; }
+    .nav-divider { padding: 14px 12px 6px; font-size: 11px; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.6px; font-weight: 600; }
+    .sb-bottom { padding: 14px 16px; border-top: 1px solid var(--line); font-size: 12px; color: var(--text-3); display: flex; align-items: center; gap: 8px; }
+    .sb-bottom button { background: transparent; color: var(--text-2); border: 1px solid var(--line-2); border-radius: 6px; padding: 5px 10px; font-size: 12px; cursor: pointer; }
+    .sb-bottom button:hover { background: var(--bg-4); color: var(--text); }
+
+    .main { overflow-y: auto; padding: 24px 30px; background: var(--bg); }
+    .page-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 22px; flex-wrap: wrap; gap: 12px; }
+    .page-header h2 { margin: 0; font-size: 22px; font-weight: 600; letter-spacing: 0.3px; }
+    .page-header .actions { display: flex; gap: 8px; }
+
+    /* ===== UI BASE ===== */
+    .btn {
+      background: var(--bg-3); color: var(--text); border: 1px solid var(--line-2);
+      border-radius: 8px; padding: 8px 14px; font-size: 13px; font-weight: 600;
+      cursor: pointer; display: inline-flex; align-items: center; gap: 6px;
+      transition: all 0.12s;
+    }
+    .btn:hover { background: var(--bg-4); border-color: var(--accent-2); }
+    .btn.primary { background: var(--silver); color: #1a1a1a; border-color: transparent; }
+    .btn.primary:hover { filter: brightness(1.08); }
+    .btn.danger { color: var(--danger); border-color: rgba(248,113,113,0.3); }
+    .btn.danger:hover { background: rgba(248,113,113,0.1); }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn svg { width: 14px; height: 14px; }
+
+    .card {
+      background: var(--bg-3); border: 1px solid var(--line);
+      border-radius: 12px; padding: 18px;
+    }
+    .card h3 { margin: 0 0 12px; font-size: 14px; font-weight: 600; color: var(--text-2); text-transform: uppercase; letter-spacing: 0.5px; }
+
+    .grid { display: grid; gap: 16px; }
+    .grid-3 { grid-template-columns: repeat(3, 1fr); }
+    .grid-2 { grid-template-columns: repeat(2, 1fr); }
+    @media (max-width: 920px) { .grid-3, .grid-2 { grid-template-columns: 1fr; } }
+
+    .kpi { display: flex; flex-direction: column; gap: 4px; }
+    .kpi .val { font-size: 36px; font-weight: 700; letter-spacing: -1px; background: var(--silver); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
+    .kpi .lbl { font-size: 12px; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.5px; }
+
+    table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+    table th { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); color: var(--text-3); font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; }
+    table td { padding: 12px; border-bottom: 1px solid var(--line); }
+    table tr:hover td { background: var(--bg-2); }
+    table tr.row-click { cursor: pointer; }
+
+    .input, .select, .textarea {
+      background: var(--bg-2); border: 1px solid var(--line-2); color: var(--text);
+      border-radius: 8px; padding: 9px 12px; width: 100%;
+    }
+    .input:focus, .select:focus, .textarea:focus { outline: none; border-color: var(--accent); }
+    .field { display: flex; flex-direction: column; gap: 5px; }
+    .field label { font-size: 11px; color: var(--text-3); font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+
+    .badge {
+      display: inline-block; padding: 3px 8px; border-radius: 12px;
+      font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px;
+    }
+    .badge-pending { background: rgba(148,163,184,0.18); color: #cbd5e1; }
+    .badge-confirmed { background: rgba(96,165,250,0.18); color: #93c5fd; }
+    .badge-done { background: rgba(74,222,128,0.18); color: #86efac; }
+    .badge-cancelled { background: rgba(248,113,113,0.18); color: #fca5a5; }
+    .badge-no_show { background: rgba(251,191,36,0.18); color: #fde68a; }
+    .badge-active { background: rgba(74,222,128,0.18); color: #86efac; }
+    .badge-closed { background: rgba(148,163,184,0.18); color: #cbd5e1; }
+    .badge-urgent { background: rgba(248,113,113,0.25); color: #fca5a5; }
+
+    .tag {
+      display: inline-block; padding: 2px 8px; border-radius: 10px;
+      font-size: 11px; font-weight: 600; margin-right: 4px;
+      background: var(--bg-4); color: var(--text-2); border: 1px solid var(--line-2);
+    }
+
+    /* ===== AGENDA ===== */
+    .agenda-controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 16px; }
+    .agenda-grid {
+      display: grid; grid-template-columns: 60px repeat(var(--cols, 5), 1fr); gap: 1px;
+      background: var(--line); border: 1px solid var(--line); border-radius: 10px; overflow: hidden;
+    }
+    .agenda-grid .head { background: var(--bg-3); padding: 8px; text-align: center; font-size: 12px; font-weight: 600; color: var(--text-2); }
+    .agenda-grid .hour { background: var(--bg-2); padding: 8px 4px; text-align: right; font-size: 11px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+    .agenda-grid .cell { background: var(--bg-2); min-height: 38px; position: relative; padding: 2px; }
+    .appt {
+      background: var(--bg-4); border-left: 3px solid var(--accent);
+      border-radius: 6px; padding: 6px 8px; font-size: 11.5px; line-height: 1.25;
+      cursor: pointer; transition: filter 0.12s;
+    }
+    .appt:hover { filter: brightness(1.15); }
+    .appt strong { display: block; font-size: 12px; }
+    .appt .meta { color: var(--text-3); font-size: 11px; }
+
+    /* ===== MODAL ===== */
+    .modal-bg { position: fixed; inset: 0; background: rgba(0,0,0,0.7); display: flex; align-items: center; justify-content: center; padding: 20px; z-index: 100; }
+    .modal { background: var(--bg-3); border: 1px solid var(--line); border-radius: 14px; padding: 22px; width: min(560px, 100%); max-height: 90vh; overflow-y: auto; }
+    .modal h3 { margin: 0 0 16px; font-size: 18px; font-weight: 600; }
+    .modal .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
+    .modal .row.single { grid-template-columns: 1fr; }
+    .modal .actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 18px; }
+
+    /* ===== TOASTS ===== */
+    .toast-stack { position: fixed; right: 18px; bottom: 18px; display: flex; flex-direction: column; gap: 8px; z-index: 200; }
+    .toast { background: var(--bg-3); color: var(--text); border: 1px solid var(--line-2); border-left: 4px solid var(--accent); padding: 10px 14px; border-radius: 8px; font-size: 13px; max-width: 320px; box-shadow: 0 10px 25px rgba(0,0,0,0.5); animation: toastIn 0.18s ease-out; }
+    .toast.success { border-left-color: var(--success); }
+    .toast.error { border-left-color: var(--danger); }
+    @keyframes toastIn { from { opacity: 0; transform: translateX(10px); } to { opacity: 1; transform: translateX(0); } }
+
+    /* ===== MISC ===== */
+    .empty-state { text-align: center; color: var(--text-3); padding: 40px 20px; font-size: 14px; }
+    .row-flex { display: flex; gap: 12px; align-items: center; }
+    .pill { padding: 4px 10px; border-radius: 14px; background: var(--bg-4); font-size: 12px; color: var(--text-2); border: 1px solid var(--line-2); cursor: pointer; }
+    .pill.active { background: var(--accent); color: #1a1a1a; border-color: var(--accent); }
+  </style>
+</head>
+<body>
+
+<!-- ============ LOGIN ============ -->
+<div id="loginScreen" class="login" style="display:none">
+  <div class="login-card">
+    <div class="logo"><img src="/logo.svg" alt="Dental Fortes" id="loginLogo" /></div>
+    <h1>Panel de gestión</h1>
+    <p class="subtitle">Acceso restringido al equipo</p>
+    <form id="loginForm">
+      <div class="field">
+        <label for="pwd">Contraseña</label>
+        <input class="input" type="password" id="pwd" required autofocus />
+      </div>
+      <div class="err" id="loginErr" style="display:none"></div>
+      <button type="submit">Entrar</button>
+    </form>
+  </div>
+</div>
+
+<!-- ============ APP ============ -->
+<div id="appScreen" class="app" style="display:none">
+  <aside class="sidebar">
+    <div class="sb-top">
+      <img src="/logo.svg" alt="Dental Fortes" id="sidebarLogo" />
+    </div>
+    <nav class="sb-nav" id="sbNav">
+      <div class="nav-item" data-route="dashboard">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+        Dashboard
+      </div>
+      <div class="nav-item" data-route="agenda">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+        Agenda
+      </div>
+      <div class="nav-item" data-route="patients">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+        Pacientes
+      </div>
+      <div class="nav-item" data-route="conversations">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+        Conversaciones
+      </div>
+      <div class="nav-item" data-route="reviews">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+        Reseñas
+      </div>
+      <div class="nav-item" data-route="marketing">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 11l18-8-3 18-7-7-8-3z"/></svg>
+        Marketing
+      </div>
+      <div class="nav-divider">Configuración</div>
+      <div class="nav-item" data-route="professionals">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+        Profesionales
+      </div>
+      <div class="nav-item" data-route="treatments">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+        Tratamientos
+      </div>
+    </nav>
+    <div class="sb-bottom">
+      <span>v1.0.0</span>
+      <button id="logoutBtn" style="margin-left:auto">Salir</button>
+    </div>
+  </aside>
+  <main class="main" id="main"></main>
+</div>
+
+<div class="toast-stack" id="toastStack"></div>
+<div id="modalRoot"></div>
+
+<script>
+// ====================================================================
+// Renderer de la SPA — vanilla JS, sin frameworks
+// ====================================================================
+
+const TOKEN_KEY = "df_admin_token";
+let token = localStorage.getItem(TOKEN_KEY);
+const $main = document.getElementById("main");
+const $loginScreen = document.getElementById("loginScreen");
+const $appScreen = document.getElementById("appScreen");
+const $loginForm = document.getElementById("loginForm");
+const $loginErr = document.getElementById("loginErr");
+const $modalRoot = document.getElementById("modalRoot");
+const $toastStack = document.getElementById("toastStack");
+
+const STATE_LABEL = { higiene: "Fase higiénica", reposicion: "Reposición de piezas", control: "Control" };
+const APPT_STATUS = { pending: "Pendiente", confirmed: "Confirmada", cancelled: "Cancelada", done: "Completada", no_show: "No vino" };
+const WEEKDAY_LABEL = ["Lun","Mar","Mié","Jue","Vie","Sáb","Dom"];
+
+let cache = { professionals: [], treatments: [] };
+
+// ---------------- Helpers ----------------
+function authHeaders() { return token ? { Authorization: "Bearer " + token } : {}; }
+function escapeHtml(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;" }[c])); }
+function fmtDate(s) { if (!s) return ""; return new Date(s).toLocaleDateString("es-ES", { day: "2-digit", month: "short", year: "numeric" }); }
+function fmtDateTime(s) { if (!s) return ""; return new Date(s).toLocaleString("es-ES", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }); }
+function fmtTime(s) { if (!s) return ""; return new Date(s).toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" }); }
+function toIsoLocal(date) {
+  const d = new Date(date);
+  const off = d.getTimezoneOffset();
+  return new Date(d.getTime() - off * 60000).toISOString().slice(0, 16);
+}
+
+function toast(msg, type = "") {
+  const el = document.createElement("div");
+  el.className = "toast " + type;
+  el.textContent = msg;
+  $toastStack.appendChild(el);
+  setTimeout(() => { el.style.opacity = "0"; el.style.transition = "opacity 0.2s"; setTimeout(() => el.remove(), 220); }, 2800);
+}
+
+async function api(path, opts = {}) {
+  const r = await fetch(path, {
+    method: opts.method || "GET",
+    headers: { "Content-Type": "application/json", ...authHeaders() },
+    body: opts.body ? JSON.stringify(opts.body) : undefined,
+  });
+  if (r.status === 401) { logout(); throw new Error("Sesión expirada"); }
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.error || `Error ${r.status}`);
+  return data;
+}
+
+// ---------------- Modal ----------------
+function openModal(html, opts = {}) {
+  $modalRoot.innerHTML = `<div class="modal-bg"><div class="modal" id="modalBody">${html}</div></div>`;
+  const bg = $modalRoot.querySelector(".modal-bg");
+  bg.addEventListener("click", (e) => { if (e.target === bg && !opts.preventClose) closeModal(); });
+  if (typeof opts.onMount === "function") opts.onMount($modalRoot.querySelector("#modalBody"));
+}
+function closeModal() { $modalRoot.innerHTML = ""; }
+
+// ---------------- Auth ----------------
+async function checkSession() {
+  if (!token) return showLogin();
+  try {
+    await api("/api/auth/me");
+    showApp();
+  } catch (_e) { showLogin(); }
+}
+
+function logout() {
+  localStorage.removeItem(TOKEN_KEY); token = null;
+  $appScreen.style.display = "none";
+  $loginScreen.style.display = "grid";
+}
+function showLogin() {
+  $appScreen.style.display = "none";
+  $loginScreen.style.display = "grid";
+  document.getElementById("pwd").focus();
+}
+async function showApp() {
+  $loginScreen.style.display = "none";
+  $appScreen.style.display = "grid";
+  // Precargar profesionales y tratamientos (se usan en muchos sitios)
+  try {
+    const [{ professionals }, { treatments }] = await Promise.all([
+      api("/api/professionals"), api("/api/treatments")
+    ]);
+    cache.professionals = professionals || [];
+    cache.treatments = treatments || [];
+  } catch (_e) {}
+  route(location.hash.replace(/^#/, "") || "dashboard");
+}
+
+$loginForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  $loginErr.style.display = "none";
+  try {
+    const data = await api("/api/auth/login", { method: "POST", body: { password: document.getElementById("pwd").value } });
+    token = data.token; localStorage.setItem(TOKEN_KEY, token);
+    document.getElementById("pwd").value = "";
+    showApp();
+  } catch (err) { $loginErr.textContent = err.message; $loginErr.style.display = "block"; }
+});
+document.getElementById("logoutBtn").addEventListener("click", logout);
+
+// ---------------- Router ----------------
+window.addEventListener("hashchange", () => route(location.hash.replace(/^#/, "") || "dashboard"));
+function route(path) {
+  document.querySelectorAll(".nav-item").forEach(n => n.classList.remove("active"));
+  const base = path.split("/")[0];
+  const navEl = document.querySelector(`.nav-item[data-route="${base}"]`);
+  if (navEl) navEl.classList.add("active");
+
+  if (path === "dashboard") return renderDashboard();
+  if (path === "agenda") return renderAgenda();
+  if (path === "patients") return renderPatientsList();
+  if (path.startsWith("patient/")) return renderPatientDetail(path.split("/")[1]);
+  if (path === "conversations") return renderConversations();
+  if (path.startsWith("conversation/")) return renderConversationDetail(path.split("/")[1]);
+  if (path === "reviews") return renderReviews();
+  if (path === "marketing") return renderMarketing();
+  if (path === "professionals") return renderProfessionals();
+  if (path === "treatments") return renderTreatments();
+  return renderDashboard();
+}
+document.getElementById("sbNav").addEventListener("click", (e) => {
+  const item = e.target.closest(".nav-item");
+  if (item) location.hash = item.dataset.route;
+});
+
+// ====================================================================
+// 1) DASHBOARD
+// ====================================================================
+async function renderDashboard() {
+  $main.innerHTML = `
+    <div class="page-header">
+      <h2>Dashboard</h2>
+      <div class="actions"><button class="btn primary" id="newApptBtn">+ Nueva cita</button></div>
+    </div>
+    <div class="grid grid-3" id="kpis">
+      <div class="card kpi"><div class="val">…</div><div class="lbl">Citas hoy</div></div>
+      <div class="card kpi"><div class="val">…</div><div class="lbl">Próximos 7 días</div></div>
+      <div class="card kpi"><div class="val">…</div><div class="lbl">Nuevos esta semana</div></div>
+    </div>
+    <div style="height:18px"></div>
+    <div class="card">
+      <h3>Próximas citas</h3>
+      <div id="upcoming"><div class="empty-state">Cargando…</div></div>
+    </div>
+  `;
+  document.getElementById("newApptBtn").addEventListener("click", () => openAppointmentModal());
+  try {
+    const stats = await api("/api/dashboard/stats");
+    document.getElementById("kpis").innerHTML = `
+      <div class="card kpi"><div class="val">${stats.citasHoy}</div><div class="lbl">Citas hoy</div></div>
+      <div class="card kpi"><div class="val">${stats.citasProximos7Dias}</div><div class="lbl">Próximos 7 días</div></div>
+      <div class="card kpi"><div class="val">${stats.pacientesNuevosEstaSemana}</div><div class="lbl">Nuevos esta semana</div></div>
+    `;
+    const from = new Date(); from.setHours(0,0,0,0);
+    const to = new Date(from); to.setDate(to.getDate() + 7);
+    const { appointments } = await api(`/api/appointments?from=${from.toISOString()}&to=${to.toISOString()}`);
+    if (!appointments.length) {
+      document.getElementById("upcoming").innerHTML = `<div class="empty-state">Sin citas en los próximos 7 días.</div>`;
+    } else {
+      document.getElementById("upcoming").innerHTML = `
+        <table>
+          <thead><tr><th>Cuándo</th><th>Paciente</th><th>Profesional</th><th>Tratamiento</th><th>Estado</th></tr></thead>
+          <tbody>
+            ${appointments.slice(0,15).map(a => `
+              <tr class="row-click" onclick="openAppointmentModal('${a.id}')">
+                <td><strong>${fmtDateTime(a.starts_at)}</strong></td>
+                <td>${escapeHtml(a.df_patients?.full_name || "—")}</td>
+                <td>${escapeHtml(a.df_professionals?.name || "—")}</td>
+                <td>${escapeHtml(a.df_treatments?.name || "—")}</td>
+                <td><span class="badge badge-${a.status}">${APPT_STATUS[a.status] || a.status}</span></td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      `;
+    }
+  } catch (err) { toast(err.message, "error"); }
+}
+
+// ====================================================================
+// 2) AGENDA
+// ====================================================================
+let agendaState = { weekStart: null, professionalId: "" };
+function startOfWeek(d) {
+  const date = new Date(d);
+  const day = date.getDay(); // 0=domingo
+  const diff = day === 0 ? -6 : 1 - day;
+  date.setDate(date.getDate() + diff);
+  date.setHours(0,0,0,0);
+  return date;
+}
+
+async function renderAgenda() {
+  if (!agendaState.weekStart) agendaState.weekStart = startOfWeek(new Date());
+  const ws = agendaState.weekStart;
+  const we = new Date(ws); we.setDate(we.getDate() + 5); // L-V
+  $main.innerHTML = `
+    <div class="page-header">
+      <h2>Agenda</h2>
+      <div class="actions">
+        <button class="btn" id="prevWeek">‹</button>
+        <button class="btn" id="thisWeek">Esta semana</button>
+        <button class="btn" id="nextWeek">›</button>
+        <button class="btn primary" id="newApptBtn">+ Nueva cita</button>
+      </div>
+    </div>
+    <div class="agenda-controls">
+      <div class="row-flex">
+        <strong>${ws.toLocaleDateString("es-ES",{day:"2-digit",month:"long"})} – ${we.toLocaleDateString("es-ES",{day:"2-digit",month:"long",year:"numeric"})}</strong>
+      </div>
+      <select class="select" id="proFilter" style="max-width:240px">
+        <option value="">Todos los profesionales</option>
+        ${cache.professionals.map(p => `<option value="${p.id}" ${agendaState.professionalId===p.id?"selected":""}>${escapeHtml(p.name)}</option>`).join("")}
+      </select>
+    </div>
+    <div id="agendaContainer"><div class="empty-state">Cargando agenda…</div></div>
+  `;
+  document.getElementById("prevWeek").onclick = () => { agendaState.weekStart = new Date(ws.getTime() - 7*86400000); renderAgenda(); };
+  document.getElementById("nextWeek").onclick = () => { agendaState.weekStart = new Date(ws.getTime() + 7*86400000); renderAgenda(); };
+  document.getElementById("thisWeek").onclick = () => { agendaState.weekStart = startOfWeek(new Date()); renderAgenda(); };
+  document.getElementById("newApptBtn").onclick = () => openAppointmentModal();
+  document.getElementById("proFilter").onchange = (e) => { agendaState.professionalId = e.target.value; renderAgenda(); };
+
+  try {
+    const from = new Date(ws); const to = new Date(ws); to.setDate(to.getDate() + 5); to.setHours(23,59,59);
+    let url = `/api/appointments?from=${from.toISOString()}&to=${to.toISOString()}`;
+    if (agendaState.professionalId) url += `&professional_id=${agendaState.professionalId}`;
+    const { appointments } = await api(url);
+
+    // Grid L-V de 9 a 20h
+    const hours = []; for (let h = 9; h <= 20; h++) hours.push(h);
+    const days = [];
+    for (let i = 0; i < 5; i++) {
+      const d = new Date(ws); d.setDate(d.getDate() + i);
+      days.push(d);
+    }
+    const cells = {};
+    appointments.forEach(a => {
+      const d = new Date(a.starts_at);
+      const dayIdx = Math.floor((d - ws) / 86400000);
+      const h = d.getHours();
+      const key = `${dayIdx}_${h}`;
+      cells[key] = cells[key] || [];
+      cells[key].push(a);
+    });
+    const html = `
+      <div class="agenda-grid" style="--cols:5">
+        <div class="head">Hora</div>
+        ${days.map((d,i) => `<div class="head">${WEEKDAY_LABEL[i]} ${d.getDate()}</div>`).join("")}
+        ${hours.map(h => `
+          <div class="hour">${String(h).padStart(2,"0")}:00</div>
+          ${days.map((_d, i) => {
+            const list = cells[`${i}_${h}`] || [];
+            return `<div class="cell">${list.map(a => {
+              const color = a.df_professionals?.color || "#9ca3af";
+              return `<div class="appt" style="border-left-color:${color}" onclick="openAppointmentModal('${a.id}')">
+                <strong>${fmtTime(a.starts_at)} · ${escapeHtml(a.df_patients?.full_name || "Sin paciente")}</strong>
+                <span class="meta">${escapeHtml(a.df_treatments?.name || "—")} · ${escapeHtml(a.df_professionals?.name?.split(" ")[0] || "")}</span>
+              </div>`;
+            }).join("")}</div>`;
+          }).join("")}
+        `).join("")}
+      </div>
+    `;
+    document.getElementById("agendaContainer").innerHTML = html;
+  } catch (err) { toast(err.message, "error"); }
+}
+
+// ====================================================================
+// 3) PACIENTES
+// ====================================================================
+async function renderPatientsList() {
+  $main.innerHTML = `
+    <div class="page-header">
+      <h2>Pacientes</h2>
+      <div class="actions"><button class="btn primary" id="newPatientBtn">+ Nuevo paciente</button></div>
+    </div>
+    <div class="card">
+      <div class="row-flex" style="margin-bottom:14px;flex-wrap:wrap">
+        <input class="input" id="patientSearch" placeholder="Buscar por nombre, teléfono o email…" style="max-width:340px" />
+        <div class="row-flex" id="stateFilters">
+          <span class="pill active" data-state="">Todos</span>
+          <span class="pill" data-state="higiene">Higiene</span>
+          <span class="pill" data-state="reposicion">Reposición</span>
+          <span class="pill" data-state="control">Control</span>
+        </div>
+      </div>
+      <div id="patientsTable"><div class="empty-state">Cargando…</div></div>
+    </div>
+  `;
+  let state = ""; let q = "";
+  async function reload() {
+    const params = new URLSearchParams();
+    if (state) params.set("state", state);
+    if (q) params.set("q", q);
+    const { patients } = await api("/api/patients?" + params.toString());
+    if (!patients.length) {
+      document.getElementById("patientsTable").innerHTML = `<div class="empty-state">No hay pacientes que coincidan.</div>`;
+      return;
+    }
+    document.getElementById("patientsTable").innerHTML = `
+      <table>
+        <thead><tr><th>Nombre</th><th>Teléfono</th><th>Email</th><th>Estado</th><th>Etiquetas</th><th>Idioma</th><th>Alta</th></tr></thead>
+        <tbody>
+          ${patients.map(p => `
+            <tr class="row-click" onclick="location.hash='patient/${p.id}'">
+              <td><strong>${escapeHtml(p.full_name)}</strong></td>
+              <td>${escapeHtml(p.phone || "—")}</td>
+              <td>${escapeHtml(p.email || "—")}</td>
+              <td>${escapeHtml(STATE_LABEL[p.patient_state] || p.patient_state)}</td>
+              <td>${(p.tags || []).map(t => `<span class="tag">${escapeHtml(t)}</span>`).join("") || "—"}</td>
+              <td>${p.language === "ca" ? "Català" : "Español"}</td>
+              <td>${fmtDate(p.created_at)}</td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    `;
+  }
+  document.getElementById("patientSearch").addEventListener("input", (e) => { q = e.target.value.trim(); reload(); });
+  document.getElementById("stateFilters").addEventListener("click", (e) => {
+    if (!e.target.classList.contains("pill")) return;
+    document.querySelectorAll("#stateFilters .pill").forEach(p => p.classList.remove("active"));
+    e.target.classList.add("active");
+    state = e.target.dataset.state; reload();
+  });
+  document.getElementById("newPatientBtn").onclick = () => openPatientModal();
+  reload();
+}
+
+function openPatientModal(existing) {
+  const p = existing || {};
+  openModal(`
+    <h3>${existing ? "Editar paciente" : "Nuevo paciente"}</h3>
+    <div class="row single"><div class="field"><label>Nombre completo</label><input class="input" id="fldName" value="${escapeHtml(p.full_name||"")}" /></div></div>
+    <div class="row">
+      <div class="field"><label>Teléfono</label><input class="input" id="fldPhone" value="${escapeHtml(p.phone||"")}" /></div>
+      <div class="field"><label>Email</label><input class="input" id="fldEmail" value="${escapeHtml(p.email||"")}" /></div>
+    </div>
+    <div class="row">
+      <div class="field"><label>Fecha nacimiento</label><input class="input" type="date" id="fldBirth" value="${p.birth_date||""}" /></div>
+      <div class="field"><label>Idioma</label>
+        <select class="select" id="fldLang">
+          <option value="es" ${p.language==="es"?"selected":""}>Español</option>
+          <option value="ca" ${p.language==="ca"?"selected":""}>Català</option>
+        </select>
+      </div>
+    </div>
+    <div class="row">
+      <div class="field"><label>Estado</label>
+        <select class="select" id="fldState">
+          <option value="higiene" ${p.patient_state==="higiene"?"selected":""}>Fase higiénica</option>
+          <option value="reposicion" ${p.patient_state==="reposicion"?"selected":""}>Reposición</option>
+          <option value="control" ${p.patient_state==="control"?"selected":""}>Control</option>
+        </select>
+      </div>
+      <div class="field"><label>Etiquetas (separadas por coma)</label>
+        <input class="input" id="fldTags" value="${escapeHtml((p.tags||[]).join(", "))}" placeholder="problematico, impuntual..." />
+      </div>
+    </div>
+    <div class="row single"><div class="field"><label>Notas</label><textarea class="textarea" id="fldNotes" rows="3">${escapeHtml(p.notes||"")}</textarea></div></div>
+    <div class="row single"><label style="display:flex;gap:8px;align-items:center;color:var(--text-2);font-size:13px">
+      <input type="checkbox" id="fldMarketing" ${p.marketing_consent?"checked":""} /> Consentimiento de marketing
+    </label></div>
+    <div class="actions">
+      <button class="btn" onclick="closeModal()">Cancelar</button>
+      <button class="btn primary" id="savePatient">Guardar</button>
+    </div>
+  `, { onMount: (body) => {
+    body.querySelector("#savePatient").onclick = async () => {
+      const payload = {
+        full_name: body.querySelector("#fldName").value.trim(),
+        phone: body.querySelector("#fldPhone").value.trim() || null,
+        email: body.querySelector("#fldEmail").value.trim() || null,
+        birth_date: body.querySelector("#fldBirth").value || null,
+        language: body.querySelector("#fldLang").value,
+        patient_state: body.querySelector("#fldState").value,
+        tags: body.querySelector("#fldTags").value.split(",").map(s => s.trim()).filter(Boolean),
+        notes: body.querySelector("#fldNotes").value.trim() || null,
+        marketing_consent: body.querySelector("#fldMarketing").checked,
+      };
+      if (!payload.full_name) { toast("Falta el nombre", "error"); return; }
+      try {
+        if (existing) {
+          await api(`/api/patients/${existing.id}`, { method: "PATCH", body: payload });
+          toast("Paciente actualizado", "success");
+          closeModal();
+          renderPatientDetail(existing.id);
+        } else {
+          const { patient } = await api("/api/patients", { method: "POST", body: payload });
+          toast("Paciente creado", "success");
+          closeModal();
+          location.hash = "patient/" + patient.id;
+        }
+      } catch (err) { toast(err.message, "error"); }
+    };
+  }});
+}
+
+async function renderPatientDetail(id) {
+  $main.innerHTML = `<div class="empty-state">Cargando paciente…</div>`;
+  try {
+    const data = await api(`/api/patients/${id}`);
+    const p = data.patient;
+    $main.innerHTML = `
+      <div class="page-header">
+        <div>
+          <a href="#patients" style="font-size:12px;color:var(--text-3)">‹ Pacientes</a>
+          <h2 style="margin-top:6px">${escapeHtml(p.full_name)}</h2>
+          <div style="margin-top:4px;color:var(--text-3);font-size:13px">
+            ${escapeHtml(p.phone || "—")} · ${escapeHtml(p.email || "—")} ·
+            <span class="badge badge-pending" style="margin-left:4px">${escapeHtml(STATE_LABEL[p.patient_state]||p.patient_state)}</span>
+          </div>
+        </div>
+        <div class="actions">
+          <button class="btn" id="editPatient">Editar</button>
+          <button class="btn danger" id="deletePatient">Eliminar</button>
+        </div>
+      </div>
+      <div class="grid grid-2">
+        <div class="card">
+          <h3>Datos</h3>
+          <p style="font-size:13.5px;color:var(--text-2)">
+            <strong>Fecha nacimiento:</strong> ${p.birth_date || "—"}<br>
+            <strong>Idioma:</strong> ${p.language==="ca"?"Català":"Español"}<br>
+            <strong>Etiquetas:</strong> ${(p.tags||[]).map(t=>`<span class="tag">${escapeHtml(t)}</span>`).join("") || "—"}<br>
+            <strong>Marketing:</strong> ${p.marketing_consent?"Sí":"No"}<br>
+            <strong>Notas:</strong> ${escapeHtml(p.notes||"—")}
+          </p>
+        </div>
+        <div class="card">
+          <h3>Pendiente</h3>
+          <div id="pendingList"></div>
+          <div class="row-flex" style="margin-top:10px">
+            <input class="input" id="newPendingTxt" placeholder="Añadir pendiente…" />
+            <button class="btn primary" id="addPendingBtn">+</button>
+          </div>
+        </div>
+        <div class="card">
+          <h3>Próximas citas</h3>
+          <div id="patientAppts"></div>
+        </div>
+        <div class="card">
+          <h3>Cobros</h3>
+          <div id="patientPays"></div>
+          <button class="btn" id="addPayment" style="margin-top:10px">+ Registrar cobro</button>
+        </div>
+        <div class="card" style="grid-column:1/-1">
+          <h3>Historial clínico</h3>
+          <div id="historyList"></div>
+          <div class="row-flex" style="margin-top:10px">
+            <input class="input" id="newHistTxt" placeholder="Añadir nota al historial…" />
+            <button class="btn primary" id="addHistBtn">+</button>
+          </div>
+        </div>
+      </div>
+    `;
+    document.getElementById("editPatient").onclick = () => openPatientModal(p);
+    document.getElementById("deletePatient").onclick = async () => {
+      if (!confirm("¿Eliminar el paciente y todo su historial?")) return;
+      try { await api(`/api/patients/${id}`, { method: "DELETE" }); toast("Eliminado", "success"); location.hash = "patients"; }
+      catch (err) { toast(err.message, "error"); }
+    };
+
+    // Pendiente
+    document.getElementById("pendingList").innerHTML = data.pending.length
+      ? data.pending.map(it => `<div style="padding:6px 0;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:8px">
+          <input type="checkbox" ${it.done?"checked":""} onchange="togglePending('${id}','${it.id}',this.checked)" />
+          <span style="${it.done?"opacity:0.5;text-decoration:line-through":""}">${escapeHtml(it.description)}</span>
+        </div>`).join("")
+      : `<div class="empty-state" style="padding:14px">Sin pendientes.</div>`;
+    document.getElementById("addPendingBtn").onclick = async () => {
+      const desc = document.getElementById("newPendingTxt").value.trim();
+      if (!desc) return;
+      try { await api(`/api/patients/${id}/pending`, { method: "POST", body: { description: desc } }); renderPatientDetail(id); }
+      catch (err) { toast(err.message, "error"); }
+    };
+
+    // Citas
+    document.getElementById("patientAppts").innerHTML = data.appointments.length
+      ? data.appointments.slice(0,10).map(a => `<div style="padding:8px 0;border-bottom:1px solid var(--line);font-size:13px">
+          <strong>${fmtDateTime(a.starts_at)}</strong> · ${escapeHtml(a.df_treatments?.name||"—")} · ${escapeHtml(a.df_professionals?.name||"—")}
+          <span class="badge badge-${a.status}" style="margin-left:6px">${APPT_STATUS[a.status]||a.status}</span>
+        </div>`).join("")
+      : `<div class="empty-state" style="padding:14px">Sin citas.</div>`;
+
+    // Cobros
+    document.getElementById("patientPays").innerHTML = data.payments.length
+      ? data.payments.slice(0,10).map(pay => `<div style="padding:6px 0;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;font-size:13px">
+          <span>${escapeHtml(pay.concept || "—")}</span>
+          <span><strong>${pay.amount_eur} €</strong> ${pay.paid?'<span class="badge badge-done">Pagado</span>':'<span class="badge badge-pending">Pendiente</span>'}</span>
+        </div>`).join("")
+      : `<div class="empty-state" style="padding:14px">Sin cobros registrados.</div>`;
+    document.getElementById("addPayment").onclick = () => openPaymentModal(id);
+
+    // Historial
+    document.getElementById("historyList").innerHTML = data.history.length
+      ? data.history.map(h => `<div style="padding:8px 0;border-bottom:1px solid var(--line);font-size:13px">
+          <div style="color:var(--text-3);font-size:11px">${fmtDateTime(h.created_at)}</div>
+          ${escapeHtml(h.note)}
+        </div>`).join("")
+      : `<div class="empty-state" style="padding:14px">Sin notas.</div>`;
+    document.getElementById("addHistBtn").onclick = async () => {
+      const note = document.getElementById("newHistTxt").value.trim();
+      if (!note) return;
+      try { await api(`/api/patients/${id}/history`, { method: "POST", body: { note } }); renderPatientDetail(id); }
+      catch (err) { toast(err.message, "error"); }
+    };
+  } catch (err) { toast(err.message, "error"); }
+}
+
+window.togglePending = async function(pid, pendingId, done) {
+  try { await api(`/api/patients/${pid}/pending/${pendingId}`, { method: "PATCH", body: { done } }); }
+  catch (err) { toast(err.message, "error"); }
+};
+
+function openPaymentModal(patientId) {
+  openModal(`
+    <h3>Registrar cobro</h3>
+    <div class="row">
+      <div class="field"><label>Importe (€)</label><input class="input" type="number" step="0.01" id="payAmt" /></div>
+      <div class="field"><label>Estado</label>
+        <select class="select" id="payState">
+          <option value="false">Pendiente</option>
+          <option value="true">Pagado</option>
+        </select>
+      </div>
+    </div>
+    <div class="row single"><div class="field"><label>Concepto</label><input class="input" id="payConcept" /></div></div>
+    <div class="row single"><div class="field"><label>Notas</label><textarea class="textarea" id="payNotes" rows="2"></textarea></div></div>
+    <div class="actions">
+      <button class="btn" onclick="closeModal()">Cancelar</button>
+      <button class="btn primary" id="savePay">Guardar</button>
+    </div>
+  `, { onMount: (body) => {
+    body.querySelector("#savePay").onclick = async () => {
+      try {
+        await api(`/api/patients/${patientId}/payments`, { method: "POST", body: {
+          amount_eur: Number(body.querySelector("#payAmt").value) || 0,
+          paid: body.querySelector("#payState").value === "true",
+          concept: body.querySelector("#payConcept").value.trim() || null,
+          notes: body.querySelector("#payNotes").value.trim() || null,
+        }});
+        toast("Cobro guardado", "success");
+        closeModal(); renderPatientDetail(patientId);
+      } catch (err) { toast(err.message, "error"); }
+    };
+  }});
+}
+
+// ====================================================================
+// CITA (modal con buscador de paciente)
+// ====================================================================
+async function openAppointmentModal(id) {
+  let existing = null;
+  if (id) {
+    try {
+      const { appointments } = await api(`/api/appointments?from=2000-01-01&to=2100-01-01`);
+      existing = appointments.find(a => a.id === id) || null;
+    } catch (_e) {}
+  }
+  const now = new Date(); now.setMinutes(0, 0, 0); now.setHours(now.getHours()+1);
+  const startDefault = existing ? toIsoLocal(existing.starts_at) : toIsoLocal(now);
+  const endDefault = existing ? toIsoLocal(existing.ends_at) : toIsoLocal(new Date(now.getTime() + 30*60000));
+
+  openModal(`
+    <h3>${existing ? "Editar cita" : "Nueva cita"}</h3>
+    <div class="row single">
+      <div class="field"><label>Paciente (busca por nombre o teléfono)</label>
+        <input class="input" id="patientPicker" placeholder="Empezar a escribir…" value="${escapeHtml(existing?.df_patients?.full_name || "")}" />
+        <input type="hidden" id="patientId" value="${existing?.patient_id||""}" />
+        <div id="patientSuggest" style="background:var(--bg-2);border:1px solid var(--line);border-radius:6px;margin-top:4px;max-height:150px;overflow-y:auto;display:none"></div>
+      </div>
+    </div>
+    <div class="row">
+      <div class="field"><label>Profesional</label>
+        <select class="select" id="apProf">
+          <option value="">—</option>
+          ${cache.professionals.map(p => `<option value="${p.id}" ${existing?.professional_id===p.id?"selected":""}>${escapeHtml(p.name)} (${escapeHtml(p.specialty)})</option>`).join("")}
+        </select>
+      </div>
+      <div class="field"><label>Tratamiento</label>
+        <select class="select" id="apTreat">
+          <option value="">—</option>
+          ${cache.treatments.map(t => `<option value="${t.id}" data-dur="${t.duration_minutes}" ${existing?.treatment_id===t.id?"selected":""}>${escapeHtml(t.name)} (${t.duration_minutes}min)</option>`).join("")}
+        </select>
+      </div>
+    </div>
+    <div class="row">
+      <div class="field"><label>Inicio</label><input class="input" type="datetime-local" id="apStart" value="${startDefault}" /></div>
+      <div class="field"><label>Fin</label><input class="input" type="datetime-local" id="apEnd" value="${endDefault}" /></div>
+    </div>
+    <div class="row">
+      <div class="field"><label>Estado</label>
+        <select class="select" id="apStatus">
+          ${Object.entries(APPT_STATUS).map(([k,v]) => `<option value="${k}" ${existing?.status===k?"selected":""}>${v}</option>`).join("")}
+        </select>
+      </div>
+      <div class="field"><label>Marcadores</label>
+        <div style="display:flex;gap:14px;padding:9px 0">
+          <label style="font-size:13px;color:var(--text-2)"><input type="checkbox" id="apFirst" ${existing?.is_first_visit?"checked":""} /> Primera visita</label>
+          <label style="font-size:13px;color:var(--text-2)"><input type="checkbox" id="apUrg" ${existing?.is_urgent?"checked":""} /> Urgencia</label>
+        </div>
+      </div>
+    </div>
+    <div class="row single"><div class="field"><label>Notas</label><textarea class="textarea" id="apNotes" rows="2">${escapeHtml(existing?.notes||"")}</textarea></div></div>
+    <div class="actions">
+      ${existing ? `<button class="btn danger" id="delAppt" style="margin-right:auto">Eliminar</button>` : ""}
+      <button class="btn" onclick="closeModal()">Cancelar</button>
+      <button class="btn primary" id="saveAppt">Guardar</button>
+    </div>
+  `, { onMount: (body) => {
+    // Buscador de paciente con autocompletado
+    const picker = body.querySelector("#patientPicker");
+    const sugg = body.querySelector("#patientSuggest");
+    let searchTimer;
+    picker.addEventListener("input", () => {
+      clearTimeout(searchTimer);
+      const q = picker.value.trim();
+      if (q.length < 2) { sugg.style.display = "none"; return; }
+      searchTimer = setTimeout(async () => {
+        try {
+          const { patients } = await api(`/api/patients?q=${encodeURIComponent(q)}&limit=10`);
+          if (!patients.length) { sugg.style.display = "none"; return; }
+          sugg.innerHTML = patients.map(p => `<div style="padding:8px 10px;cursor:pointer;border-bottom:1px solid var(--line);font-size:13px"
+            data-id="${p.id}" data-name="${escapeHtml(p.full_name)}">
+            <strong>${escapeHtml(p.full_name)}</strong> <span style="color:var(--text-3)">${escapeHtml(p.phone||"")}</span>
+          </div>`).join("");
+          sugg.style.display = "block";
+        } catch (_e) {}
+      }, 250);
+    });
+    sugg.addEventListener("click", (e) => {
+      const it = e.target.closest("[data-id]");
+      if (!it) return;
+      body.querySelector("#patientId").value = it.dataset.id;
+      picker.value = it.dataset.name;
+      sugg.style.display = "none";
+    });
+
+    // Auto-ajuste fin según tratamiento
+    body.querySelector("#apTreat").addEventListener("change", (e) => {
+      const dur = Number(e.target.selectedOptions[0]?.dataset.dur) || 30;
+      const start = new Date(body.querySelector("#apStart").value);
+      if (!isNaN(start)) body.querySelector("#apEnd").value = toIsoLocal(new Date(start.getTime() + dur*60000));
+    });
+
+    body.querySelector("#saveAppt").onclick = async () => {
+      const payload = {
+        patient_id: body.querySelector("#patientId").value || null,
+        professional_id: body.querySelector("#apProf").value || null,
+        treatment_id: body.querySelector("#apTreat").value || null,
+        starts_at: new Date(body.querySelector("#apStart").value).toISOString(),
+        ends_at: new Date(body.querySelector("#apEnd").value).toISOString(),
+        status: body.querySelector("#apStatus").value,
+        is_first_visit: body.querySelector("#apFirst").checked,
+        is_urgent: body.querySelector("#apUrg").checked,
+        notes: body.querySelector("#apNotes").value.trim() || null,
+      };
+      try {
+        if (existing) {
+          await api(`/api/appointments/${existing.id}`, { method: "PATCH", body: payload });
+          toast("Cita actualizada", "success");
+        } else {
+          await api("/api/appointments", { method: "POST", body: payload });
+          toast("Cita creada", "success");
+        }
+        closeModal();
+        route(location.hash.replace(/^#/, "") || "dashboard");
+      } catch (err) { toast(err.message, "error"); }
+    };
+    if (existing) {
+      body.querySelector("#delAppt").onclick = async () => {
+        if (!confirm("¿Eliminar esta cita?")) return;
+        try { await api(`/api/appointments/${existing.id}`, { method: "DELETE" }); toast("Eliminada","success"); closeModal(); route(location.hash.replace(/^#/, "") || "dashboard"); }
+        catch (err) { toast(err.message, "error"); }
+      };
+    }
+  }});
+}
+window.openAppointmentModal = openAppointmentModal;
+
+// ====================================================================
+// 4) CONVERSACIONES (placeholder — se llena con el bot en Fase 2)
+// ====================================================================
+async function renderConversations() {
+  $main.innerHTML = `
+    <div class="page-header">
+      <h2>Conversaciones</h2>
+      <div class="actions"><span class="badge badge-pending">Pendiente del chatbot · Fase 2</span></div>
+    </div>
+    <div class="card" id="convCard"><div class="empty-state">Cargando…</div></div>
+  `;
+  try {
+    const { conversations } = await api("/api/conversations");
+    if (!conversations.length) {
+      document.getElementById("convCard").innerHTML = `<div class="empty-state">
+        No hay conversaciones todavía.<br>
+        <small>Cuando integremos el chatbot (Fase 2), todas las conversaciones de web y WhatsApp aparecerán aquí.</small>
+      </div>`;
+      return;
+    }
+    document.getElementById("convCard").innerHTML = `
+      <table>
+        <thead><tr><th>Contacto</th><th>Canal</th><th>Idioma</th><th>Estado</th><th>Bot</th><th>Última actividad</th></tr></thead>
+        <tbody>
+          ${conversations.map(c => `
+            <tr class="row-click" onclick="location.hash='conversation/${c.id}'">
+              <td>
+                <strong>${escapeHtml(c.customer_name || "Sin nombre")}</strong>
+                <div style="color:var(--text-3);font-size:11px">${escapeHtml(c.customer_phone || c.customer_email || "")}</div>
+              </td>
+              <td>${c.channel === "whatsapp" ? "WhatsApp" : "Web"}</td>
+              <td>${c.language === "ca" ? "Català" : "Español"}</td>
+              <td>
+                <span class="badge badge-${c.status}">${c.status === "closed" ? "Cerrada" : "Activa"}</span>
+                ${c.is_urgent ? '<span class="badge badge-urgent">Urgente</span>' : ""}
+              </td>
+              <td>${c.bot_enabled ? "ON" : "OFF"}</td>
+              <td>${fmtDateTime(c.updated_at)}</td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    `;
+  } catch (err) { toast(err.message, "error"); }
+}
+
+async function renderConversationDetail(id) {
+  $main.innerHTML = `<div class="empty-state">Cargando…</div>`;
+  try {
+    const conv = await api(`/api/conversations/${id}`);
+    $main.innerHTML = `
+      <div class="page-header">
+        <div>
+          <a href="#conversations" style="font-size:12px;color:var(--text-3)">‹ Conversaciones</a>
+          <h2 style="margin-top:6px">${escapeHtml(conv.customer_name || "Sin nombre")}</h2>
+          <div style="color:var(--text-3);font-size:13px">${escapeHtml(conv.customer_phone||"")} · ${conv.channel === "whatsapp" ? "WhatsApp" : "Web"} · ${conv.language === "ca" ? "Català" : "Español"}</div>
+        </div>
+        <div class="actions">
+          <button class="btn" id="toggleBot">${conv.bot_enabled?"Pausar bot":"Reactivar bot"}</button>
+          <button class="btn danger" id="closeConv">Cerrar</button>
+        </div>
+      </div>
+      <div class="card">
+        <div style="max-height:480px;overflow-y:auto;padding:6px 0">
+          ${(conv.messages||[]).map(m => `
+            <div style="display:flex;${m.role==="user"?"justify-content:flex-start":"justify-content:flex-end"};margin-bottom:8px">
+              <div style="background:${m.role==="admin"?"var(--accent)":m.role==="assistant"?"var(--bg-2)":"var(--bg-4)"};color:${m.role==="admin"?"#1a1a1a":"var(--text)"};padding:9px 12px;border-radius:10px;max-width:70%;font-size:13.5px">
+                ${escapeHtml(m.content)}
+                <div style="font-size:10px;opacity:0.6;margin-top:3px">${fmtDateTime(m.created_at)} · ${m.role}</div>
+              </div>
+            </div>
+          `).join("") || '<div class="empty-state">Sin mensajes.</div>'}
+        </div>
+        <div class="row-flex" style="margin-top:12px">
+          <input class="input" id="replyTxt" placeholder="Responder como Dental Fortes…" />
+          <button class="btn primary" id="sendReply">Enviar</button>
+        </div>
+      </div>
+    `;
+    document.getElementById("toggleBot").onclick = async () => {
+      try { await api(`/api/conversations/${id}/toggle-bot`, { method: "POST", body: { enabled: !conv.bot_enabled } }); renderConversationDetail(id); }
+      catch (err) { toast(err.message, "error"); }
+    };
+    document.getElementById("closeConv").onclick = async () => {
+      if (!confirm("¿Cerrar la conversación?")) return;
+      try { await api(`/api/conversations/${id}/close`, { method: "POST" }); location.hash = "conversations"; }
+      catch (err) { toast(err.message, "error"); }
+    };
+    document.getElementById("sendReply").onclick = async () => {
+      const txt = document.getElementById("replyTxt").value.trim();
+      if (!txt) return;
+      try { await api(`/api/conversations/${id}/reply`, { method: "POST", body: { content: txt } }); renderConversationDetail(id); }
+      catch (err) { toast(err.message, "error"); }
+    };
+  } catch (err) { toast(err.message, "error"); }
+}
+
+// ====================================================================
+// 5) RESEÑAS
+// ====================================================================
+async function renderReviews() {
+  $main.innerHTML = `
+    <div class="page-header">
+      <h2>Reseñas</h2>
+      <div class="actions">
+        <a class="btn" href="https://dentalfortes.com/opiniones/" target="_blank" rel="noopener">Google Profile ↗</a>
+      </div>
+    </div>
+    <div class="card" id="reviewsCard"><div class="empty-state">Cargando…</div></div>
+  `;
+  try {
+    const { reviews } = await api("/api/reviews");
+    if (!reviews.length) {
+      document.getElementById("reviewsCard").innerHTML = `<div class="empty-state">
+        Sin reseñas registradas todavía.<br>
+        <small>Cuando el chatbot las pida a los pacientes tras la cita, aparecerán aquí. Las puntuaciones 4.5★+ van a Google, el resto se gestionan internamente.</small>
+      </div>`;
+      return;
+    }
+    document.getElementById("reviewsCard").innerHTML = `
+      <table>
+        <thead><tr><th>Paciente</th><th>Valoración</th><th>Comentario</th><th>Ruta</th><th>Estado</th><th>Fecha</th></tr></thead>
+        <tbody>
+          ${reviews.map(r => `
+            <tr>
+              <td>${escapeHtml(r.df_patients?.full_name || "Anónimo")}</td>
+              <td><strong>${r.rating}★</strong></td>
+              <td style="max-width:340px">${escapeHtml(r.comment || "—")}</td>
+              <td>${r.routed_to === "google" ? "Google" : "Interno"}</td>
+              <td><span class="badge badge-${r.status === "handled_internal" ? "done" : "pending"}">${r.status}</span></td>
+              <td>${fmtDateTime(r.created_at)}</td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    `;
+  } catch (err) { toast(err.message, "error"); }
+}
+
+// ====================================================================
+// 6) MARKETING / CAMPAÑAS
+// ====================================================================
+async function renderMarketing() {
+  $main.innerHTML = `
+    <div class="page-header">
+      <h2>Marketing y campañas</h2>
+      <div class="actions"><button class="btn primary" id="newCampaignBtn">+ Nueva campaña</button></div>
+    </div>
+    <div class="card" id="campaignsCard"><div class="empty-state">Cargando…</div></div>
+  `;
+  document.getElementById("newCampaignBtn").onclick = () => openCampaignModal();
+  try {
+    const { campaigns } = await api("/api/campaigns");
+    if (!campaigns.length) {
+      document.getElementById("campaignsCard").innerHTML = `<div class="empty-state">
+        Sin campañas todavía.<br>
+        <small>Segmenta por edad, tratamiento, presupuestos no aceptados o inactivos para enviar campañas por WhatsApp (Fase 2).</small>
+      </div>`;
+      return;
+    }
+    document.getElementById("campaignsCard").innerHTML = `
+      <table>
+        <thead><tr><th>Nombre</th><th>Segmento</th><th>Estado</th><th>Programada</th><th>Enviada</th></tr></thead>
+        <tbody>
+          ${campaigns.map(c => `
+            <tr>
+              <td><strong>${escapeHtml(c.name)}</strong></td>
+              <td>${escapeHtml(c.segment.replaceAll("_", " "))}</td>
+              <td><span class="badge badge-${c.status==="sent"?"done":c.status==="scheduled"?"confirmed":"pending"}">${c.status}</span></td>
+              <td>${c.scheduled_at ? fmtDateTime(c.scheduled_at) : "—"}</td>
+              <td>${c.sent_at ? fmtDateTime(c.sent_at) : "—"}</td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    `;
+  } catch (err) { toast(err.message, "error"); }
+}
+
+function openCampaignModal() {
+  openModal(`
+    <h3>Nueva campaña</h3>
+    <div class="row single"><div class="field"><label>Nombre</label><input class="input" id="cmpName" placeholder="Recordatorio anual de revisión" /></div></div>
+    <div class="row">
+      <div class="field"><label>Segmento</label>
+        <select class="select" id="cmpSeg">
+          <option value="inactivos">Pacientes inactivos</option>
+          <option value="por_edad">Por edad</option>
+          <option value="por_tratamiento">Por tratamiento</option>
+          <option value="presupuestos_no_aceptados">Presupuestos no aceptados</option>
+          <option value="manual">Manual</option>
+        </select>
+      </div>
+      <div class="field"><label>Programar (opcional)</label><input class="input" type="datetime-local" id="cmpSched" /></div>
+    </div>
+    <div class="row single"><div class="field"><label>Plantilla del mensaje</label>
+      <textarea class="textarea" id="cmpMsg" rows="4" placeholder="Hola {{nombre}}, ..."></textarea>
+    </div></div>
+    <div class="actions">
+      <button class="btn" onclick="closeModal()">Cancelar</button>
+      <button class="btn primary" id="saveCmp">Guardar</button>
+    </div>
+  `, { onMount: (body) => {
+    body.querySelector("#saveCmp").onclick = async () => {
+      try {
+        await api("/api/campaigns", { method: "POST", body: {
+          name: body.querySelector("#cmpName").value.trim(),
+          segment: body.querySelector("#cmpSeg").value,
+          message_template: body.querySelector("#cmpMsg").value.trim(),
+          scheduled_at: body.querySelector("#cmpSched").value ? new Date(body.querySelector("#cmpSched").value).toISOString() : null,
+        }});
+        toast("Campaña creada", "success"); closeModal(); renderMarketing();
+      } catch (err) { toast(err.message, "error"); }
+    };
+  }});
+}
+
+// ====================================================================
+// 7) PROFESIONALES
+// ====================================================================
+async function renderProfessionals() {
+  $main.innerHTML = `
+    <div class="page-header">
+      <h2>Profesionales</h2>
+      <div class="actions"><button class="btn primary" id="newProBtn">+ Añadir</button></div>
+    </div>
+    <div class="card" id="proCard"><div class="empty-state">Cargando…</div></div>
+  `;
+  document.getElementById("newProBtn").onclick = () => openProfessionalModal();
+  try {
+    const { professionals } = await api("/api/professionals");
+    cache.professionals = professionals;
+    document.getElementById("proCard").innerHTML = `
+      <table>
+        <thead><tr><th>Nombre</th><th>Especialidad</th><th>Horarios</th><th>Color</th><th></th></tr></thead>
+        <tbody>
+          ${professionals.map(p => `
+            <tr>
+              <td><strong>${escapeHtml(p.name)}</strong></td>
+              <td>${escapeHtml(p.specialty)}</td>
+              <td style="font-size:12px;color:var(--text-2)">
+                ${(p.df_professional_schedules||[]).map(s => `${WEEKDAY_LABEL[s.weekday]} ${s.start_time.slice(0,5)}-${s.end_time.slice(0,5)}`).join(" · ") || "—"}
+              </td>
+              <td><span style="display:inline-block;width:18px;height:18px;border-radius:50%;background:${p.color}"></span></td>
+              <td><button class="btn" onclick='editProfessional(${JSON.stringify(JSON.stringify(p))})'>Editar</button></td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    `;
+  } catch (err) { toast(err.message, "error"); }
+}
+window.editProfessional = (json) => openProfessionalModal(JSON.parse(json));
+
+function openProfessionalModal(existing) {
+  const p = existing || { schedules: [] };
+  const schedules = existing?.df_professional_schedules?.map(s => ({...s})) || [];
+  openModal(`
+    <h3>${existing ? "Editar profesional" : "Nuevo profesional"}</h3>
+    <div class="row">
+      <div class="field"><label>Nombre</label><input class="input" id="proName" value="${escapeHtml(p.name||"")}" /></div>
+      <div class="field"><label>Especialidad</label><input class="input" id="proSpec" value="${escapeHtml(p.specialty||"")}" /></div>
+    </div>
+    <div class="row">
+      <div class="field"><label>Color en agenda</label><input class="input" type="color" id="proColor" value="${p.color||"#9ca3af"}" /></div>
+      <div class="field"><label>Activo</label>
+        <select class="select" id="proActive"><option value="true" ${p.active!==false?"selected":""}>Sí</option><option value="false" ${p.active===false?"selected":""}>No</option></select>
+      </div>
+    </div>
+    <h4 style="margin:18px 0 8px;font-size:13px;color:var(--text-2);text-transform:uppercase;letter-spacing:0.5px">Horarios</h4>
+    <div id="schedList"></div>
+    <button class="btn" id="addSched" style="margin-top:8px">+ Añadir franja</button>
+    <div class="actions">
+      <button class="btn" onclick="closeModal()">Cancelar</button>
+      <button class="btn primary" id="saveProf">Guardar</button>
+    </div>
+  `, { onMount: (body) => {
+    function paintSchedules() {
+      body.querySelector("#schedList").innerHTML = schedules.map((s, i) => `
+        <div class="row" style="grid-template-columns:1fr 1fr 1fr auto;align-items:end">
+          <div class="field"><label>Día</label>
+            <select class="select" data-i="${i}" data-k="weekday">
+              ${WEEKDAY_LABEL.map((d,wi) => `<option value="${wi}" ${s.weekday==wi?"selected":""}>${d}</option>`).join("")}
+            </select>
+          </div>
+          <div class="field"><label>Inicio</label><input class="input" type="time" data-i="${i}" data-k="start_time" value="${(s.start_time||"09:00").slice(0,5)}" /></div>
+          <div class="field"><label>Fin</label><input class="input" type="time" data-i="${i}" data-k="end_time" value="${(s.end_time||"14:00").slice(0,5)}" /></div>
+          <button class="btn danger" data-rm="${i}" style="margin-bottom:0">×</button>
+        </div>
+      `).join("");
+      body.querySelectorAll("#schedList [data-i]").forEach(el => {
+        el.addEventListener("change", (e) => {
+          const i = Number(e.target.dataset.i);
+          schedules[i][e.target.dataset.k] = e.target.dataset.k === "weekday" ? Number(e.target.value) : e.target.value;
+        });
+      });
+      body.querySelectorAll("#schedList [data-rm]").forEach(b => {
+        b.addEventListener("click", () => { schedules.splice(Number(b.dataset.rm), 1); paintSchedules(); });
+      });
+    }
+    paintSchedules();
+    body.querySelector("#addSched").onclick = () => { schedules.push({ weekday: 0, start_time: "09:30", end_time: "14:00" }); paintSchedules(); };
+    body.querySelector("#saveProf").onclick = async () => {
+      const payload = {
+        name: body.querySelector("#proName").value.trim(),
+        specialty: body.querySelector("#proSpec").value.trim(),
+        color: body.querySelector("#proColor").value,
+        active: body.querySelector("#proActive").value === "true",
+        schedules,
+      };
+      if (!payload.name || !payload.specialty) { toast("Faltan datos", "error"); return; }
+      try {
+        if (existing) await api(`/api/professionals/${existing.id}`, { method: "PATCH", body: payload });
+        else await api("/api/professionals", { method: "POST", body: payload });
+        toast("Guardado", "success"); closeModal(); renderProfessionals();
+      } catch (err) { toast(err.message, "error"); }
+    };
+  }});
+}
+
+// ====================================================================
+// 8) TRATAMIENTOS
+// ====================================================================
+async function renderTreatments() {
+  $main.innerHTML = `
+    <div class="page-header">
+      <h2>Tratamientos</h2>
+      <div class="actions"><button class="btn primary" id="newTrtBtn">+ Añadir</button></div>
+    </div>
+    <div class="card" id="trtCard"><div class="empty-state">Cargando…</div></div>
+  `;
+  document.getElementById("newTrtBtn").onclick = () => openTreatmentModal();
+  try {
+    const { treatments } = await api("/api/treatments");
+    cache.treatments = treatments;
+    document.getElementById("trtCard").innerHTML = `
+      <table>
+        <thead><tr><th>Nombre</th><th>Duración</th><th>Primera visita</th><th>Activo</th><th></th></tr></thead>
+        <tbody>
+          ${treatments.map(t => `
+            <tr>
+              <td><strong>${escapeHtml(t.name)}</strong>${t.description?`<div style="color:var(--text-3);font-size:12px">${escapeHtml(t.description)}</div>`:""}</td>
+              <td>${t.duration_minutes} min</td>
+              <td>${t.is_first_visit ? "Sí" : "No"}</td>
+              <td>${t.active ? "Sí" : "No"}</td>
+              <td>
+                <button class="btn" onclick='editTreatment(${JSON.stringify(JSON.stringify(t))})'>Editar</button>
+                <button class="btn danger" onclick='deleteTreatment("${t.id}")'>×</button>
+              </td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    `;
+  } catch (err) { toast(err.message, "error"); }
+}
+window.editTreatment = (json) => openTreatmentModal(JSON.parse(json));
+window.deleteTreatment = async (id) => {
+  if (!confirm("¿Eliminar tratamiento?")) return;
+  try { await api(`/api/treatments/${id}`, { method: "DELETE" }); toast("Eliminado","success"); renderTreatments(); }
+  catch (err) { toast(err.message, "error"); }
+};
+
+function openTreatmentModal(existing) {
+  const t = existing || {};
+  openModal(`
+    <h3>${existing ? "Editar tratamiento" : "Nuevo tratamiento"}</h3>
+    <div class="row">
+      <div class="field"><label>Nombre</label><input class="input" id="trtName" value="${escapeHtml(t.name||"")}" /></div>
+      <div class="field"><label>Duración (min)</label><input class="input" type="number" id="trtDur" value="${t.duration_minutes||30}" /></div>
+    </div>
+    <div class="row single"><div class="field"><label>Descripción</label><textarea class="textarea" id="trtDesc" rows="2">${escapeHtml(t.description||"")}</textarea></div></div>
+    <div class="row">
+      <div class="field"><label>Primera visita</label>
+        <select class="select" id="trtFirst"><option value="false" ${!t.is_first_visit?"selected":""}>No</option><option value="true" ${t.is_first_visit?"selected":""}>Sí</option></select>
+      </div>
+      <div class="field"><label>Activo</label>
+        <select class="select" id="trtActive"><option value="true" ${t.active!==false?"selected":""}>Sí</option><option value="false" ${t.active===false?"selected":""}>No</option></select>
+      </div>
+    </div>
+    <div class="actions">
+      <button class="btn" onclick="closeModal()">Cancelar</button>
+      <button class="btn primary" id="saveTrt">Guardar</button>
+    </div>
+  `, { onMount: (body) => {
+    body.querySelector("#saveTrt").onclick = async () => {
+      const payload = {
+        name: body.querySelector("#trtName").value.trim(),
+        duration_minutes: Number(body.querySelector("#trtDur").value) || 30,
+        description: body.querySelector("#trtDesc").value.trim() || null,
+        is_first_visit: body.querySelector("#trtFirst").value === "true",
+        active: body.querySelector("#trtActive").value === "true",
+      };
+      if (!payload.name) { toast("Falta el nombre", "error"); return; }
+      try {
+        if (existing) await api(`/api/treatments/${existing.id}`, { method: "PATCH", body: payload });
+        else await api("/api/treatments", { method: "POST", body: payload });
+        toast("Guardado", "success"); closeModal(); renderTreatments();
+      } catch (err) { toast(err.message, "error"); }
+    };
+  }});
+}
+
+// ---------------- ARRANQUE ----------------
+checkSession();
+</script>
+</body>
+</html>
