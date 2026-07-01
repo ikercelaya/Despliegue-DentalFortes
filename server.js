@@ -1,5 +1,9 @@
 require("dotenv").config();
 
+// Zona horaria de la clínica. Vercel/Lambda corren en UTC y Vercel bloquea la
+// env var TZ, así que la forzamos aquí antes de cualquier cálculo de fechas.
+process.env.TZ = "Europe/Madrid";
+
 const path = require("path");
 const express = require("express");
 

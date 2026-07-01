@@ -4,7 +4,8 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Dental Fortes · CRM</title>
-  <link rel="icon" type="image/svg+xml" href="/logo.svg" />
+  <link rel="icon" type="image/png" href="/logo.png" />
+  <link rel="alternate icon" type="image/svg+xml" href="/logo.svg" />
   <style>
     :root {
       --bg: #1a1a1a;
@@ -24,16 +25,32 @@
       --danger: #f87171;
       --info: #60a5fa;
       --pending: #94a3b8;
+      /* ---- Premium tokens (mismo palette, capa de acabado) ---- */
+      --ring: rgba(255,255,255,0.14);
+      --ring-strong: rgba(255,255,255,0.30);
+      --shadow-sm: 0 2px 6px rgba(0,0,0,0.35);
+      --shadow-md: 0 10px 28px rgba(0,0,0,0.45);
+      --shadow-lg: 0 24px 56px rgba(0,0,0,0.55);
+      --card-grad: linear-gradient(160deg, #2f2f2f 0%, #272727 100%);
+      --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; }
     }
     * { box-sizing: border-box; }
     html, body { height: 100%; margin: 0; }
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
       background: var(--bg);
+      background-image:
+        radial-gradient(1100px 620px at 88% -10%, rgba(255,255,255,0.05), transparent 60%),
+        radial-gradient(900px 520px at -6% 112%, rgba(255,255,255,0.035), transparent 55%);
+      background-attachment: fixed;
       color: var(--text);
       font-size: 14px;
       line-height: 1.5;
       -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
     }
     button, input, select, textarea { font-family: inherit; font-size: inherit; }
     a { color: var(--accent); text-decoration: none; }
@@ -45,12 +62,26 @@
       background: radial-gradient(circle at 30% 20%, #2a2a2a 0%, #1a1a1a 60%, #0d0d0d 100%);
     }
     .login-card {
-      background: var(--bg-3); padding: 36px 32px; border-radius: 14px;
-      box-shadow: 0 24px 60px rgba(0,0,0,0.55), 0 0 0 1px var(--line);
-      width: min(380px, 100%); text-align: center;
+      position: relative;
+      background: var(--card-grad); padding: 40px 34px; border-radius: 18px;
+      box-shadow: var(--shadow-lg), inset 0 1px 0 rgba(255,255,255,0.06), 0 0 0 1px var(--ring);
+      width: min(390px, 100%); text-align: center;
+      animation: cardRise 0.5s var(--ease) both;
     }
-    .login-card .logo { margin: 0 auto 22px; width: 200px; }
-    .login-card .logo img { width: 100%; display: block; border-radius: 6px; }
+    .login-card::before {
+      content: ""; position: absolute; inset: 0; border-radius: 18px; padding: 1px;
+      background: linear-gradient(140deg, rgba(255,255,255,0.28), rgba(255,255,255,0) 46%);
+      -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+      -webkit-mask-composite: xor; mask-composite: exclude; pointer-events: none;
+    }
+    .login-card .logo {
+      width: fit-content; margin: 0 auto 24px;
+      background: #ffffff; padding: 16px 20px; border-radius: 14px;
+      box-shadow: 0 12px 28px rgba(0,0,0,0.5), inset 0 0 0 1px rgba(255,255,255,0.65);
+    }
+    .login-card .logo img {
+      max-width: 210px; max-height: 116px; width: auto; height: auto; display: block; border-radius: 4px;
+    }
     .login-card h1 {
       margin: 0 0 4px; font-size: 18px; font-weight: 500; color: var(--text);
       letter-spacing: 1.5px; text-transform: uppercase;
@@ -64,35 +95,59 @@
     }
     .login-card input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(200,200,200,0.1); }
     .login-card button {
-      background: var(--silver); color: #1a1a1a; border: 0; border-radius: 8px;
-      padding: 12px 14px; font-weight: 700; cursor: pointer; margin-top: 4px;
+      position: relative; overflow: hidden;
+      background: var(--silver); color: #1a1a1a; border: 0; border-radius: 10px;
+      padding: 13px 14px; font-weight: 700; cursor: pointer; margin-top: 6px;
       letter-spacing: 0.5px; text-transform: uppercase; font-size: 13px;
-      transition: filter 0.15s;
+      box-shadow: 0 8px 20px rgba(0,0,0,0.4);
+      transition: transform 0.18s var(--ease), box-shadow 0.18s var(--ease), filter 0.18s;
     }
-    .login-card button:hover { filter: brightness(1.1); }
+    .login-card button::after {
+      content: ""; position: absolute; top: 0; left: -120%; width: 55%; height: 100%;
+      background: linear-gradient(100deg, transparent, rgba(255,255,255,0.6), transparent);
+      transform: skewX(-18deg); transition: left 0.6s var(--ease);
+    }
+    .login-card button:hover { filter: brightness(1.06); transform: translateY(-1px); box-shadow: 0 14px 28px rgba(0,0,0,0.5); }
+    .login-card button:hover::after { left: 135%; }
+    .login-card button:active { transform: translateY(0); }
     .login-card .err { color: var(--danger); font-size: 13px; background: rgba(248,113,113,0.1); padding: 10px; border-radius: 6px; text-align: center; }
 
     /* ===== LAYOUT ===== */
     .app { display: grid; grid-template-columns: 240px 1fr; height: 100vh; }
     .sidebar {
-      background: var(--bg-3); border-right: 1px solid var(--line);
+      background: linear-gradient(180deg, #2b2b2b 0%, #232323 100%);
+      border-right: 1px solid var(--line);
       display: flex; flex-direction: column; overflow: hidden;
+      box-shadow: inset -1px 0 0 rgba(255,255,255,0.03);
     }
     .sb-top {
-      padding: 16px 18px; border-bottom: 1px solid var(--line);
-      display: flex; align-items: center; gap: 10px;
+      padding: 18px 18px; border-bottom: 1px solid var(--line);
+      display: flex; align-items: center; justify-content: center; gap: 10px;
     }
-    .sb-top img { height: 32px; width: auto; max-width: 100%; }
+    .sb-top img { background: #ffffff; padding: 7px 12px; border-radius: 10px; max-height: 44px; max-width: 172px; width: auto; height: auto; box-shadow: 0 4px 12px rgba(0,0,0,0.45); }
     .sb-nav { flex: 1; overflow-y: auto; padding: 12px 8px; }
     .nav-item {
-      display: flex; align-items: center; gap: 10px; padding: 10px 12px;
-      border-radius: 8px; cursor: pointer; color: var(--text-2);
-      font-size: 13.5px; font-weight: 500; margin-bottom: 2px;
-      transition: background 0.12s, color 0.12s;
+      position: relative; display: flex; align-items: center; gap: 11px; padding: 10px 12px;
+      border-radius: 10px; cursor: pointer; color: var(--text-2);
+      font-size: 13.5px; font-weight: 500; margin-bottom: 3px;
+      border: 1px solid transparent;
+      transition: background 0.2s var(--ease), color 0.2s var(--ease),
+                  border-color 0.2s var(--ease), transform 0.2s var(--ease), box-shadow 0.2s var(--ease);
     }
-    .nav-item:hover { background: var(--bg-4); color: var(--text); }
-    .nav-item.active { background: var(--bg-4); color: var(--text); border-left: 3px solid var(--accent); padding-left: 9px; }
-    .nav-item svg { width: 16px; height: 16px; flex-shrink: 0; }
+    .nav-item svg { width: 16px; height: 16px; flex-shrink: 0; transition: transform 0.2s var(--ease), color 0.2s var(--ease); }
+    .nav-item:hover { background: rgba(255,255,255,0.05); color: var(--text); transform: translateX(3px); border-color: var(--ring); }
+    .nav-item:hover svg { transform: scale(1.1); }
+    .nav-item.active {
+      background: linear-gradient(120deg, rgba(255,255,255,0.10), rgba(255,255,255,0.02));
+      color: var(--text); border-color: var(--ring-strong);
+      box-shadow: var(--shadow-sm), inset 0 1px 0 rgba(255,255,255,0.06);
+    }
+    .nav-item.active::before {
+      content: ""; position: absolute; left: -1px; top: 8px; bottom: 8px; width: 3px;
+      border-radius: 3px; background: var(--silver);
+      box-shadow: 0 0 10px rgba(230,230,230,0.55);
+      animation: navBar 0.28s var(--ease) both;
+    }
     .nav-divider { padding: 14px 12px 6px; font-size: 11px; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.6px; font-weight: 600; }
     .sb-bottom { padding: 14px 16px; border-top: 1px solid var(--line); font-size: 12px; color: var(--text-3); display: flex; align-items: center; gap: 8px; }
     .sb-bottom button { background: transparent; color: var(--text-2); border: 1px solid var(--line-2); border-radius: 6px; padding: 5px 10px; font-size: 12px; cursor: pointer; }
@@ -105,23 +160,37 @@
 
     /* ===== UI BASE ===== */
     .btn {
+      position: relative; overflow: hidden;
       background: var(--bg-3); color: var(--text); border: 1px solid var(--line-2);
-      border-radius: 8px; padding: 8px 14px; font-size: 13px; font-weight: 600;
+      border-radius: 10px; padding: 9px 15px; font-size: 13px; font-weight: 600;
       cursor: pointer; display: inline-flex; align-items: center; gap: 6px;
-      transition: all 0.12s;
+      box-shadow: var(--shadow-sm), inset 0 1px 0 rgba(255,255,255,0.04);
+      transition: transform 0.18s var(--ease), box-shadow 0.18s var(--ease),
+                  border-color 0.18s var(--ease), background 0.18s var(--ease), filter 0.18s var(--ease);
     }
-    .btn:hover { background: var(--bg-4); border-color: var(--accent-2); }
+    .btn:hover { background: var(--bg-4); border-color: var(--ring-strong); transform: translateY(-1px); box-shadow: var(--shadow-md), 0 0 0 1px var(--ring); }
+    .btn:active { transform: translateY(0); box-shadow: var(--shadow-sm); }
+    .btn:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(255,255,255,0.20); }
     .btn.primary { background: var(--silver); color: #1a1a1a; border-color: transparent; }
-    .btn.primary:hover { filter: brightness(1.08); }
+    .btn.primary:hover { filter: brightness(1.06); }
+    .btn.primary::after {
+      content: ""; position: absolute; top: 0; left: -120%; width: 55%; height: 100%;
+      background: linear-gradient(100deg, transparent, rgba(255,255,255,0.55), transparent);
+      transform: skewX(-18deg); transition: left 0.55s var(--ease);
+    }
+    .btn.primary:hover::after { left: 135%; }
     .btn.danger { color: var(--danger); border-color: rgba(248,113,113,0.3); }
-    .btn.danger:hover { background: rgba(248,113,113,0.1); }
-    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn.danger:hover { background: rgba(248,113,113,0.12); border-color: rgba(248,113,113,0.55); }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; box-shadow: var(--shadow-sm); }
     .btn svg { width: 14px; height: 14px; }
 
     .card {
-      background: var(--bg-3); border: 1px solid var(--line);
-      border-radius: 12px; padding: 18px;
+      background: var(--card-grad); border: 1px solid var(--line);
+      border-radius: 14px; padding: 18px;
+      box-shadow: var(--shadow-sm), inset 0 1px 0 rgba(255,255,255,0.04);
+      transition: box-shadow 0.2s var(--ease), border-color 0.2s var(--ease);
     }
+    .card:hover { border-color: var(--ring); box-shadow: var(--shadow-md), inset 0 1px 0 rgba(255,255,255,0.06); }
     .card h3 { margin: 0 0 12px; font-size: 14px; font-weight: 600; color: var(--text-2); text-transform: uppercase; letter-spacing: 0.5px; }
 
     .grid { display: grid; gap: 16px; }
@@ -130,7 +199,7 @@
     @media (max-width: 920px) { .grid-3, .grid-2 { grid-template-columns: 1fr; } }
 
     .kpi { display: flex; flex-direction: column; gap: 4px; }
-    .kpi .val { font-size: 36px; font-weight: 700; letter-spacing: -1px; background: var(--silver); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
+    .kpi .val { font-size: 38px; font-weight: 700; letter-spacing: -1px; background: var(--silver); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; filter: drop-shadow(0 2px 18px rgba(255,255,255,0.14)); }
     .kpi .lbl { font-size: 12px; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.5px; }
 
     table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
@@ -141,9 +210,10 @@
 
     .input, .select, .textarea {
       background: var(--bg-2); border: 1px solid var(--line-2); color: var(--text);
-      border-radius: 8px; padding: 9px 12px; width: 100%;
+      border-radius: 9px; padding: 9px 12px; width: 100%;
+      transition: border-color 0.16s var(--ease), box-shadow 0.16s var(--ease);
     }
-    .input:focus, .select:focus, .textarea:focus { outline: none; border-color: var(--accent); }
+    .input:focus, .select:focus, .textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(255,255,255,0.10); }
     .field { display: flex; flex-direction: column; gap: 5px; }
     .field label { font-size: 11px; color: var(--text-3); font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
 
@@ -180,13 +250,14 @@
       border-radius: 6px; padding: 6px 8px; font-size: 11.5px; line-height: 1.25;
       cursor: pointer; transition: filter 0.12s;
     }
-    .appt:hover { filter: brightness(1.15); }
+    .appt { transition: filter 0.15s var(--ease), transform 0.15s var(--ease), box-shadow 0.15s var(--ease); }
+    .appt:hover { filter: brightness(1.15); transform: translateY(-1px); box-shadow: var(--shadow-sm); }
     .appt strong { display: block; font-size: 12px; }
     .appt .meta { color: var(--text-3); font-size: 11px; }
 
     /* ===== MODAL ===== */
-    .modal-bg { position: fixed; inset: 0; background: rgba(0,0,0,0.7); display: flex; align-items: center; justify-content: center; padding: 20px; z-index: 100; }
-    .modal { background: var(--bg-3); border: 1px solid var(--line); border-radius: 14px; padding: 22px; width: min(560px, 100%); max-height: 90vh; overflow-y: auto; }
+    .modal-bg { position: fixed; inset: 0; background: rgba(0,0,0,0.72); backdrop-filter: blur(3px); display: flex; align-items: center; justify-content: center; padding: 20px; z-index: 100; animation: fadeIn 0.18s ease both; }
+    .modal { background: var(--card-grad); border: 1px solid var(--line-2); border-radius: 16px; padding: 22px; width: min(560px, 100%); max-height: 90vh; overflow-y: auto; box-shadow: var(--shadow-lg), inset 0 1px 0 rgba(255,255,255,0.06); animation: cardRise 0.26s var(--ease) both; }
     .modal h3 { margin: 0 0 16px; font-size: 18px; font-weight: 600; }
     .modal .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
     .modal .row.single { grid-template-columns: 1fr; }
@@ -204,6 +275,23 @@
     .row-flex { display: flex; gap: 12px; align-items: center; }
     .pill { padding: 4px 10px; border-radius: 14px; background: var(--bg-4); font-size: 12px; color: var(--text-2); border: 1px solid var(--line-2); cursor: pointer; }
     .pill.active { background: var(--accent); color: #1a1a1a; border-color: var(--accent); }
+    .pill { transition: background 0.16s var(--ease), color 0.16s var(--ease), border-color 0.16s var(--ease), transform 0.16s var(--ease); }
+    .pill:hover { border-color: var(--ring-strong); transform: translateY(-1px); }
+
+    /* ===== Animaciones premium ===== */
+    @keyframes cardRise { from { opacity: 0; transform: translateY(14px) scale(0.985); } to { opacity: 1; transform: translateY(0) scale(1); } }
+    @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+    @keyframes fadeUp { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+    @keyframes navBar { from { transform: scaleY(0); opacity: 0; } to { transform: scaleY(1); opacity: 1; } }
+
+    /* Entrada suave del contenido al navegar entre secciones */
+    .main > .page-header { animation: fadeUp 0.32s var(--ease) both; }
+    .main > .grid,
+    .main > .card,
+    .main > .agenda-grid,
+    .main > table,
+    .main > .agenda-controls { animation: fadeUp 0.38s var(--ease) both; }
+    table td { transition: background 0.15s var(--ease); }
   </style>
 </head>
 <body>
@@ -211,7 +299,7 @@
 <!-- ============ LOGIN ============ -->
 <div id="loginScreen" class="login" style="display:none">
   <div class="login-card">
-    <div class="logo"><img src="/logo.svg" alt="Dental Fortes" id="loginLogo" /></div>
+    <div class="logo"><img src="/logo.png" alt="Dental Fortes" id="loginLogo" onerror="this.onerror=null;this.src='/logo.svg'" /></div>
     <h1>Panel de gestión</h1>
     <p class="subtitle">Acceso restringido al equipo</p>
     <form id="loginForm">
@@ -229,7 +317,7 @@
 <div id="appScreen" class="app" style="display:none">
   <aside class="sidebar">
     <div class="sb-top">
-      <img src="/logo.svg" alt="Dental Fortes" id="sidebarLogo" />
+      <img src="/logo.png" alt="Dental Fortes" id="sidebarLogo" onerror="this.onerror=null;this.src='/logo.svg'" />
     </div>
     <nav class="sb-nav" id="sbNav">
       <div class="nav-item" data-route="dashboard">
