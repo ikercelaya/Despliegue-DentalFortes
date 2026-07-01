@@ -5,12 +5,16 @@
   "main": "server.js",
   "scripts": {
     "check": "node --check server.js",
-    "start": "node server.js"
+    "start": "node server.js",
+    "secrets": "node scripts/gen-secrets.js"
   },
   "keywords": ["crm", "dental", "clinica", "supabase", "vercel"],
   "author": "Propulsa",
   "license": "ISC",
   "type": "commonjs",
+  "engines": {
+    "node": "22.x"
+  },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0",
     "bcryptjs": "^2.4.3",
