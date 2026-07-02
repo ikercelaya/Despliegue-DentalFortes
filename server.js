@@ -624,7 +624,19 @@ app.patch("/api/campaigns/:id", requireAuth, async (req, res) => {
 // =============================================================
 // CHATBOT — chat web público (Fase 2)
 // =============================================================
+// CORS: el widget se embebe en la web de la clínica (otro dominio) y llama aquí.
+app.options("/api/chat", (_req, res) => {
+  res.set({
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type",
+    "Access-Control-Max-Age": "86400",
+  });
+  return res.sendStatus(204);
+});
+
 app.post("/api/chat", async (req, res) => {
+  res.set("Access-Control-Allow-Origin", "*");
   try {
     const message = String(req.body?.message || "").trim();
     if (!message) return res.status(400).json({ error: "Mensaje vacío." });
