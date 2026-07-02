@@ -522,6 +522,17 @@ app.post("/api/conversations/:id/close", requireAuth, async (req, res) => {
   }
 });
 
+// Eliminar conversación (los mensajes se borran en cascada por la FK).
+app.delete("/api/conversations/:id", requireAuth, async (req, res) => {
+  try {
+    const { error } = await supabase.from("df_conversations").delete().eq("id", req.params.id);
+    if (error) throw error;
+    return res.json({ ok: true });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 // =============================================================
 // RESEÑAS (flujo 4.5/5: <=4 → interno, >4 → Google)
 // =============================================================
