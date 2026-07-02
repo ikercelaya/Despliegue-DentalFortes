@@ -622,6 +622,33 @@ app.patch("/api/campaigns/:id", requireAuth, async (req, res) => {
 });
 
 // =============================================================
+// CHATBOT — chat web público (Fase 2)
+// =============================================================
+app.post("/api/chat", async (req, res) => {
+  try {
+    const message = String(req.body?.message || "").trim();
+    if (!message) return res.status(400).json({ error: "Mensaje vacío." });
+    if (message.length > 2000) return res.status(400).json({ error: "Mensaje demasiado largo." });
+
+    const { handleMessage } = require("./lib/bot");
+    const result = await handleMessage({
+      channel: "web",
+      token: req.body?.token || null,
+      name: req.body?.name || null,
+      text: message,
+    });
+    return res.json({
+      reply: result.reply,
+      token: result.conversation?.access_token || req.body?.token || null,
+      language: result.language,
+    });
+  } catch (err) {
+    console.error("[chat]", err);
+    return res.status(500).json({ error: "No se ha podido procesar el mensaje." });
+  }
+});
+
+// =============================================================
 // 404
 // =============================================================
 app.use((req, res) => res.status(404).json({ error: "Ruta no encontrada", path: req.path }));

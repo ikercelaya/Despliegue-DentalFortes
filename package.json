@@ -8,7 +8,13 @@
     "start": "node server.js",
     "secrets": "node scripts/gen-secrets.js"
   },
-  "keywords": ["crm", "dental", "clinica", "supabase", "vercel"],
+  "keywords": [
+    "crm",
+    "dental",
+    "clinica",
+    "supabase",
+    "vercel"
+  ],
   "author": "Propulsa",
   "license": "ISC",
   "type": "commonjs",
@@ -16,6 +22,7 @@
     "node": "22.x"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.71.2",
     "@supabase/supabase-js": "^2.45.0",
     "bcryptjs": "^2.4.3",
     "dotenv": "^17.4.2",
