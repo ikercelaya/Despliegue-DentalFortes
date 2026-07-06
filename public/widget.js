@@ -82,7 +82,7 @@
     panel.classList.add("dfw-open");
     if (!greeted) {
       greeted = true;
-      addMsg("Hola, soy el asistente de Dental Fortes. ¿En qué puedo ayudarle?", "bot");
+      addMsg("Hola, soy el asistente de Dental Fortes. Para atenderle mejor, ¿me indica su nombre completo, por favor?", "bot");
     }
     setTimeout(function () { input.focus(); }, 100);
   }
