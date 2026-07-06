@@ -14,7 +14,7 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const PUBLIC_URL = (process.env.PUBLIC_URL || `http://localhost:${PORT}`).replace(/\/$/, "");
 
-app.use(express.json({ limit: "8mb" }));
+app.use(express.json({ limit: "8mb", verify: (req, _res, buf) => { req.rawBody = buf; } }));
 app.use(express.static(path.join(__dirname, "public")));
 
 // --------- Páginas ---------
@@ -669,6 +669,42 @@ app.post("/api/chat", async (req, res) => {
     console.error("[chat]", err);
     return res.status(500).json({ error: "No se ha podido procesar el mensaje." });
   }
+});
+
+// =============================================================
+// WHATSAPP — webhook (Fase 2b / Cloud API de Meta)
+// =============================================================
+// Verificación del webhook (Meta hace un GET con hub.challenge).
+app.get("/api/whatsapp/webhook", (req, res) => {
+  const wa = require("./lib/whatsapp");
+  const challenge = wa.verifyChallenge(req.query);
+  if (challenge) return res.status(200).send(challenge);
+  return res.sendStatus(403);
+});
+
+// Recepción de mensajes entrantes.
+app.post("/api/whatsapp/webhook", async (req, res) => {
+  const wa = require("./lib/whatsapp");
+  if (!wa.verifySignature(req.rawBody, req.get("x-hub-signature-256"))) {
+    return res.sendStatus(403);
+  }
+  try {
+    const { handleMessage } = require("./lib/bot");
+    for (const m of wa.parseIncoming(req.body)) {
+      if (!m.text) {
+        await wa.sendText(m.from, "De momento solo puedo leer mensajes de texto. ¿Me lo escribe, por favor?").catch(() => {});
+        continue;
+      }
+      const result = await handleMessage({ channel: "whatsapp", phone: m.from, name: m.name, text: m.text });
+      if (result.reply) {
+        await wa.sendText(m.from, result.reply).catch((e) => console.error("[wa send]", e.message));
+      }
+    }
+  } catch (err) {
+    console.error("[whatsapp]", err);
+  }
+  // Siempre 200 para que Meta no reintente en bucle.
+  return res.sendStatus(200);
 });
 
 // =============================================================
