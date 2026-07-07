@@ -881,7 +881,7 @@ async function renderPatientDetail(id) {
     // Historial
     document.getElementById("historyList").innerHTML = data.history.length
       ? data.history.map(h => `<div style="padding:8px 0;border-bottom:1px solid var(--line);font-size:13px">
-          <div style="color:var(--text-3);font-size:11px">${fmtDateTime(h.created_at)}</div>
+          <div style="color:var(--text-3);font-size:11px">${fmtDate(h.created_at)}</div>
           ${escapeHtml(h.note)}
         </div>`).join("")
       : `<div class="empty-state" style="padding:14px">Sin notas.</div>`;
@@ -1009,7 +1009,7 @@ async function openAppointmentModal(id) {
           if (!patients.length) { sugg.style.display = "none"; return; }
           sugg.innerHTML = patients.map(p => `<div style="padding:8px 10px;cursor:pointer;border-bottom:1px solid var(--line);font-size:13px"
             data-id="${p.id}" data-name="${escapeHtml(p.full_name)}">
-            <strong>${escapeHtml(p.full_name)}</strong> <span style="color:var(--text-3)">${escapeHtml(p.phone||"")}</span>
+            <strong>${escapeHtml(p.full_name)}</strong> <span style="color:var(--text-3)">${escapeHtml(fmtPhone(p.phone)||"")}</span>
           </div>`).join("");
           sugg.style.display = "block";
         } catch (_e) {}
