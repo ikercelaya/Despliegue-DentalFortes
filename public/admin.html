@@ -611,6 +611,61 @@
       .page-header { align-items: flex-start; }
       .agenda-grid { min-width: 720px; }
     }
+
+    /* =====================================================================
+       Capa de pulido — fix de desplegables nativos + acabados premium.
+       Aditiva: no modifica las reglas anteriores, solo las refina.
+       ===================================================================== */
+
+    /* El navegador renderiza los controles nativos (lista del <select>,
+       calendario de fecha/hora, scrollbars) en modo oscuro. Es el fix
+       principal de los desplegables ilegibles. */
+    :root { color-scheme: dark; }
+
+    /* Refuerzo explícito: opciones oscuras y legibles (Chrome/Edge/Firefox) */
+    select option {
+      background-color: #1c1c1c;
+      color: #ececec;
+    }
+    select option:disabled { color: #6f6f6f; }
+
+    /* Select cerrado: sin flecha del sistema, chevron propio y consistente */
+    .select {
+      appearance: none; -webkit-appearance: none;
+      background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5l5 5 5-5' fill='none' stroke='%23bdbdbd' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 12px center;
+      padding-right: 34px;
+    }
+
+    /* Checkboxes acordes al tema (Marcadores: primera visita / urgencia) */
+    input[type="checkbox"], input[type="radio"] { accent-color: #e6e6e6; width: 15px; height: 15px; }
+
+    /* Textareas: solo redimensionado vertical para no romper el layout */
+    .textarea { resize: vertical; }
+
+    /* Scrollbars finos y discretos en toda la app */
+    * { scrollbar-width: thin; scrollbar-color: #3c3c3c transparent; }
+    ::-webkit-scrollbar { width: 10px; height: 10px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #383838; border-radius: 8px; border: 2px solid transparent; background-clip: padding-box; }
+    ::-webkit-scrollbar-thumb:hover { background: #4a4a4a; background-clip: padding-box; }
+
+    /* Selección de texto coherente con el tema */
+    ::selection { background: rgba(255,255,255,0.24); color: #ffffff; }
+
+    /* Cifras alineadas en tablas y agenda (fechas, horas, importes) */
+    table td, .agenda-grid .hour { font-variant-numeric: tabular-nums; }
+
+    /* Título de página con brillo sutil */
+    .page-header h2 {
+      background: linear-gradient(180deg, #ffffff 0%, #cfcfcf 100%);
+      -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+    }
+
+    /* Modales: jerarquía más clara entre título, cuerpo y acciones */
+    .modal h3 { padding-bottom: 12px; border-bottom: 1px solid rgba(255,255,255,0.08); }
+    .modal .actions { padding-top: 14px; border-top: 1px solid rgba(255,255,255,0.07); margin-top: 20px; }
   </style>
 </head>
 <body>
