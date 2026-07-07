@@ -245,7 +245,7 @@ app.get("/api/patients/:id", requireAuth, async (req, res) => {
 
 app.patch("/api/patients/:id", requireAuth, async (req, res) => {
   try {
-    const allowed = ["full_name","phone","email","birth_date","language","patient_state","tags","notes","marketing_consent"];
+    const allowed = ["full_name","phone","email","birth_date","language","patient_state","tags","notes","marketing_consent","dni"];
     const patch = {};
     for (const k of allowed) if (k in (req.body || {})) patch[k] = req.body[k];
     const { data, error } = await supabase

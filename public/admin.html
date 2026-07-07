@@ -401,6 +401,7 @@ function escapeHtml(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, c
 function fmtDate(s) { if (!s) return ""; return new Date(s).toLocaleDateString("es-ES", { day: "2-digit", month: "short", year: "numeric" }); }
 function fmtDateTime(s) { if (!s) return ""; return new Date(s).toLocaleString("es-ES", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }); }
 function fmtTime(s) { if (!s) return ""; return new Date(s).toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" }); }
+function fmtPhone(p) { if (!p) return ""; return String(p).replace(/^\+?34/, ""); }
 function toIsoLocal(date) {
   const d = new Date(date);
   const off = d.getTimezoneOffset();
@@ -688,7 +689,7 @@ async function renderPatientsList() {
           ${patients.map(p => `
             <tr class="row-click" onclick="location.hash='patient/${p.id}'">
               <td><strong>${escapeHtml(p.full_name)}</strong></td>
-              <td>${escapeHtml(p.phone || "—")}</td>
+              <td>${escapeHtml(fmtPhone(p.phone) || "—")}</td>
               <td>${escapeHtml(p.email || "—")}</td>
               <td>${escapeHtml(STATE_LABEL[p.patient_state] || p.patient_state)}</td>
               <td>${(p.tags || []).map(t => `<span class="tag">${escapeHtml(t)}</span>`).join("") || "—"}</td>
@@ -791,7 +792,7 @@ async function renderPatientDetail(id) {
           <a href="#patients" style="font-size:12px;color:var(--text-3)">‹ Pacientes</a>
           <h2 style="margin-top:6px">${escapeHtml(p.full_name)}</h2>
           <div style="margin-top:4px;color:var(--text-3);font-size:13px">
-            ${escapeHtml(p.phone || "—")} · ${escapeHtml(p.email || "—")} ·
+            ${escapeHtml(fmtPhone(p.phone) || "—")} · ${escapeHtml(p.email || "—")} ·
             <span class="badge badge-pending" style="margin-left:4px">${escapeHtml(STATE_LABEL[p.patient_state]||p.patient_state)}</span>
           </div>
         </div>
@@ -808,7 +809,8 @@ async function renderPatientDetail(id) {
             <strong>Idioma:</strong> ${p.language==="ca"?"Català":"Español"}<br>
             <strong>Etiquetas:</strong> ${(p.tags||[]).map(t=>`<span class="tag">${escapeHtml(t)}</span>`).join("") || "—"}<br>
             <strong>Marketing:</strong> ${p.marketing_consent?"Sí":"No"}<br>
-            <strong>Notas:</strong> ${escapeHtml(p.notes||"—")}
+            <strong>Dirección:</strong> ${escapeHtml(p.notes||"—")}<br>
+            <strong>DNI:</strong> ${escapeHtml(p.dni||"—")}
           </p>
         </div>
         <div class="card">

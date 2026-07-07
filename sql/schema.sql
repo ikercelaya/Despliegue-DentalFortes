@@ -63,6 +63,8 @@ create table if not exists public.df_patients (
   full_name text not null,
   phone text,
   email text,
+  dni text,
+  source text, -- null = alta manual/bot · 'import_excel' = migración inicial
   birth_date date,
   language text not null default 'es' check (language in ('es', 'ca')),
   patient_state text not null default 'higiene' check (patient_state in ('higiene', 'reposicion', 'control')),
