@@ -13,6 +13,58 @@ const { issueToken, checkPassword, requireAuth } = require("./lib/auth");
 const app = express();
 const PORT = process.env.PORT || 3000;
 const PUBLIC_URL = (process.env.PUBLIC_URL || `http://localhost:${PORT}`).replace(/\/$/, "");
+const META_GRAPH_VERSION = process.env.META_GRAPH_VERSION || "v21.0";
+const META_GRAPH_BASE = `https://graph.facebook.com/${META_GRAPH_VERSION}`;
+
+function normalizeMetaTemplateName(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9_]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 512);
+}
+
+function extractNumericTemplateVars(text) {
+  const found = new Set();
+  const re = /{{\s*(\d+)\s*}}/g;
+  let match;
+  while ((match = re.exec(String(text || "")))) found.add(Number(match[1]));
+  return [...found].filter((n) => n > 0).sort((a, b) => a - b);
+}
+
+function hasNamedTemplateVars(text) {
+  return /{{\s*[^}\d\s][^}]*}}/.test(String(text || ""));
+}
+
+function parseExampleValues(value) {
+  if (Array.isArray(value)) return value.map((v) => String(v).trim()).filter(Boolean);
+  return String(value || "")
+    .split(/\r?\n|,/)
+    .map((v) => v.trim())
+    .filter(Boolean);
+}
+
+function addTextExamples(component, exampleValues, key) {
+  const vars = extractNumericTemplateVars(component.text);
+  if (!vars.length) return;
+  for (let i = 0; i < vars.length; i++) {
+    if (vars[i] !== i + 1) {
+      throw new Error(`Las variables de ${key} deben ir seguidas: {{1}}, {{2}}, {{3}}...`);
+    }
+  }
+  const maxVar = Math.max(...vars);
+  if (exampleValues.length < maxVar) {
+    throw new Error(`Faltan ejemplos para las variables de ${key}. Necesitas ${maxVar} ejemplo(s).`);
+  }
+  if (key === "body_text") {
+    component.example = { body_text: [vars.map((n) => exampleValues[n - 1])] };
+  } else {
+    component.example = { [key]: [exampleValues[vars[0] - 1]] };
+  }
+}
 
 app.use(express.json({ limit: "8mb", verify: (req, _res, buf) => { req.rawBody = buf; } }));
 app.use(express.static(path.join(__dirname, "public")));
@@ -628,6 +680,86 @@ app.patch("/api/campaigns/:id", requireAuth, async (req, res) => {
     if (error) throw error;
     return res.json({ campaign: data });
   } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// Crear plantillas de WhatsApp en Meta desde el apartado Marketing.
+app.post("/api/marketing/templates", requireAuth, async (req, res) => {
+  try {
+    const wabaId = process.env.WHATSAPP_BUSINESS_ACCOUNT_ID || process.env.WABA_ID || "";
+    const token = process.env.WHATSAPP_TOKEN || "";
+    if (!wabaId || !token) {
+      return res.status(500).json({
+        error: "Faltan WHATSAPP_BUSINESS_ACCOUNT_ID o WHATSAPP_TOKEN en las variables de entorno.",
+      });
+    }
+
+    const name = normalizeMetaTemplateName(req.body?.name);
+    const category = String(req.body?.category || "MARKETING").trim().toUpperCase();
+    const language = String(req.body?.language || "es_ES").trim();
+    const headerText = String(req.body?.header_text || "").trim();
+    const bodyText = String(req.body?.body_text || "").trim();
+    const footerText = String(req.body?.footer_text || "").trim();
+    const bodyExamples = parseExampleValues(req.body?.body_examples);
+    const headerExamples = parseExampleValues(req.body?.header_examples);
+
+    if (!name) return res.status(400).json({ error: "Falta el nombre de la plantilla." });
+    if (!["MARKETING", "UTILITY", "AUTHENTICATION"].includes(category)) {
+      return res.status(400).json({ error: "Categoría de plantilla no válida." });
+    }
+    if (!language) return res.status(400).json({ error: "Falta el idioma de la plantilla." });
+    if (!bodyText) return res.status(400).json({ error: "Falta el texto principal de la plantilla." });
+    if (bodyText.length > 1024) return res.status(400).json({ error: "El texto principal supera 1024 caracteres." });
+    if (headerText.length > 60) return res.status(400).json({ error: "El encabezado supera 60 caracteres." });
+    if (footerText.length > 60) return res.status(400).json({ error: "El pie supera 60 caracteres." });
+    if (hasNamedTemplateVars(headerText) || hasNamedTemplateVars(bodyText) || hasNamedTemplateVars(footerText)) {
+      return res.status(400).json({
+        error: "Meta solo acepta variables numeradas como {{1}}, {{2}}. No uses {{nombre}} en plantillas de Meta.",
+      });
+    }
+
+    const components = [];
+    if (headerText) {
+      const header = { type: "HEADER", format: "TEXT", text: headerText };
+      addTextExamples(header, headerExamples.length ? headerExamples : bodyExamples, "header_text");
+      components.push(header);
+    }
+
+    const body = { type: "BODY", text: bodyText };
+    addTextExamples(body, bodyExamples, "body_text");
+    components.push(body);
+
+    if (footerText) components.push({ type: "FOOTER", text: footerText });
+
+    const payload = {
+      name,
+      category,
+      language,
+      allow_category_change: req.body?.allow_category_change !== false,
+      components,
+    };
+
+    const metaRes = await fetch(`${META_GRAPH_BASE}/${wabaId}/message_templates`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+    const metaData = await metaRes.json().catch(() => ({}));
+    if (!metaRes.ok) {
+      const detail = metaData?.error?.error_user_msg || metaData?.error?.message || `Meta Graph ${metaRes.status}`;
+      return res.status(502).json({ error: detail, meta: metaData });
+    }
+
+    return res.json({
+      template: metaData,
+      submitted: { name, category, language },
+    });
+  } catch (err) {
+    console.error("[marketing/template]", err);
     return res.status(500).json({ error: err.message });
   }
 });

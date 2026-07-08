@@ -1595,11 +1595,15 @@ async function renderMarketing() {
   $main.innerHTML = `
     <div class="page-header">
       <h2>Marketing y campañas</h2>
-      <div class="actions"><button class="btn primary" id="newCampaignBtn">+ Nueva campaña</button></div>
+      <div class="actions">
+        <button class="btn primary" id="newCampaignBtn">+ Nueva campaña</button>
+        <button class="btn" id="newTemplateBtn">Crear plantilla</button>
+      </div>
     </div>
     <div class="card" id="campaignsCard"><div class="empty-state">Cargando…</div></div>
   `;
   document.getElementById("newCampaignBtn").onclick = () => openCampaignModal();
+  document.getElementById("newTemplateBtn").onclick = () => openMetaTemplateModal();
   try {
     const { campaigns } = await api("/api/campaigns");
     if (!campaigns.length) {
@@ -1662,6 +1666,94 @@ function openCampaignModal() {
         }});
         toast("Campaña creada", "success"); closeModal(); renderMarketing();
       } catch (err) { toast(err.message, "error"); }
+    };
+  }});
+}
+
+function openMetaTemplateModal() {
+  openModal(`
+    <h3>Crear plantilla en Meta</h3>
+    <div class="row">
+      <div class="field"><label>Nombre en Meta</label>
+        <input class="input" id="tplName" placeholder="recordatorio_limpieza_general" />
+        <small style="color:var(--text-3)">Solo minúsculas, números y guiones bajos. El CRM lo normaliza si hace falta.</small>
+      </div>
+      <div class="field"><label>Categoría</label>
+        <select class="select" id="tplCategory">
+          <option value="MARKETING">Marketing</option>
+          <option value="UTILITY">Utilidad</option>
+        </select>
+      </div>
+    </div>
+    <div class="row">
+      <div class="field"><label>Idioma</label>
+        <select class="select" id="tplLanguage">
+          <option value="es_ES">Español (España)</option>
+          <option value="ca">Catalán</option>
+        </select>
+      </div>
+      <div class="field"><label>Encabezado (opcional)</label>
+        <input class="input" id="tplHeader" maxlength="60" placeholder="Dental Fortes" />
+      </div>
+    </div>
+    <div class="row single"><div class="field"><label>Texto exacto de la plantilla</label>
+      <textarea class="textarea" id="tplBody" rows="6" maxlength="1024" placeholder="Hola {{1}}, le recordamos que ya puede reservar su limpieza general en Dental Fortes. ¿Qué día le iría bien?"></textarea>
+      <small style="color:var(--text-3)">Para personalizar, Meta exige variables numeradas: {{1}}, {{2}}. No uses {{nombre}} aquí.</small>
+    </div></div>
+    <div class="row single"><div class="field"><label>Ejemplos para Meta (si usas variables)</label>
+      <input class="input" id="tplExamples" placeholder="Juan, limpieza general" />
+      <small style="color:var(--text-3)">Un ejemplo por variable, en orden. Si el texto tiene {{1}}, escribe un ejemplo; si tiene {{1}} y {{2}}, separa con coma.</small>
+    </div></div>
+    <div class="row single"><div class="field"><label>Pie (opcional)</label>
+      <input class="input" id="tplFooter" maxlength="60" placeholder="Responda a este WhatsApp y le ayudamos." />
+    </div></div>
+    <div id="tplResult" class="empty-state" style="display:none;padding:12px;margin-top:4px;text-align:left"></div>
+    <div class="actions">
+      <button class="btn" onclick="closeModal()">Cancelar</button>
+      <button class="btn primary" id="saveTpl">Crear en Meta</button>
+    </div>
+  `, { onMount: (body) => {
+    const nameInput = body.querySelector("#tplName");
+    nameInput.addEventListener("blur", () => {
+      nameInput.value = nameInput.value
+        .trim()
+        .toLowerCase()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/[^a-z0-9_]+/g, "_")
+        .replace(/^_+|_+$/g, "");
+    });
+
+    body.querySelector("#saveTpl").onclick = async () => {
+      const btn = body.querySelector("#saveTpl");
+      const result = body.querySelector("#tplResult");
+      result.style.display = "none";
+      btn.disabled = true;
+      btn.textContent = "Creando…";
+      try {
+        const data = await api("/api/marketing/templates", { method: "POST", body: {
+          name: body.querySelector("#tplName").value.trim(),
+          category: body.querySelector("#tplCategory").value,
+          language: body.querySelector("#tplLanguage").value,
+          header_text: body.querySelector("#tplHeader").value.trim(),
+          body_text: body.querySelector("#tplBody").value.trim(),
+          body_examples: body.querySelector("#tplExamples").value.trim(),
+          footer_text: body.querySelector("#tplFooter").value.trim(),
+          allow_category_change: true,
+        }});
+        const status = data.template?.status || "en revisión";
+        const id = data.template?.id || "sin id devuelto";
+        result.style.display = "block";
+        result.innerHTML = `<strong>Plantilla enviada a Meta.</strong><br>Nombre: ${escapeHtml(data.submitted?.name || "")}<br>ID: ${escapeHtml(id)}<br>Estado: ${escapeHtml(status)}`;
+        toast("Plantilla enviada a Meta", "success");
+      } catch (err) {
+        result.style.display = "block";
+        result.innerHTML = `<strong>No se pudo crear la plantilla.</strong><br>${escapeHtml(err.message)}`;
+        toast(err.message, "error");
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "Crear en Meta";
+      }
     };
   }});
 }
