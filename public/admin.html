@@ -666,6 +666,43 @@
     /* Modales: jerarquía más clara entre título, cuerpo y acciones */
     .modal h3 { padding-bottom: 12px; border-bottom: 1px solid rgba(255,255,255,0.08); }
     .modal .actions { padding-top: 14px; border-top: 1px solid rgba(255,255,255,0.07); margin-top: 20px; }
+
+    /* ===== Constructor de segmentos (Marketing · Nueva campaña) ===== */
+    .seg-list { display: flex; flex-direction: column; gap: 8px; }
+    .seg-item {
+      border: 1px solid rgba(255,255,255,0.11); border-radius: 10px;
+      background: rgba(255,255,255,0.028); overflow: hidden;
+      transition: border-color 0.16s var(--ease), background 0.16s var(--ease);
+    }
+    .seg-item.checked { border-color: rgba(255,255,255,0.28); background: rgba(255,255,255,0.06); }
+    .seg-head {
+      display: flex; align-items: center; gap: 11px; padding: 11px 13px; cursor: pointer;
+      font-size: 13.5px; font-weight: 600; color: var(--text); user-select: none;
+    }
+    .seg-head input[type="checkbox"] { flex: 0 0 auto; }
+    .seg-head .seg-desc { margin-left: auto; font-size: 11px; font-weight: 500; color: var(--text-3); }
+    .seg-detail {
+      padding: 4px 13px 13px 40px; border-top: 1px solid rgba(255,255,255,0.07);
+      display: flex; flex-direction: column; gap: 10px;
+    }
+    .chk-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 6px 12px; }
+    .chk-row { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-2); cursor: pointer; padding: 3px 0; }
+    .chk-row:hover { color: var(--text); }
+    .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+    .chip {
+      display: inline-flex; align-items: center; gap: 6px; padding: 4px 6px 4px 11px;
+      border-radius: 999px; font-size: 12px; font-weight: 600;
+      background: rgba(255,255,255,0.09); color: var(--text); border: 1px solid rgba(255,255,255,0.16);
+    }
+    .chip button {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 17px; height: 17px; border-radius: 50%; border: 0; cursor: pointer;
+      background: rgba(255,255,255,0.14); color: var(--text); font-size: 13px; line-height: 1; padding: 0;
+    }
+    .chip button:hover { background: var(--danger); color: #1a1a1a; }
+    .seg-add { display: flex; gap: 8px; margin-top: 10px; }
+    .seg-add .input { flex: 1; }
+    .mini-note { font-size: 11px; color: var(--text-3); }
   </style>
 </head>
 <body>
@@ -1613,15 +1650,21 @@ async function renderMarketing() {
       </div>`;
       return;
     }
+    const segLabel = (c) => {
+      const cfg = c.segment_config || {};
+      const segs = Array.isArray(cfg.segments) && cfg.segments.length ? cfg.segments : (c.segment ? [c.segment] : []);
+      return segs.map(s => s.startsWith("custom:") ? s.slice(7) : s.replaceAll("_", " ")).join(", ") || "—";
+    };
     document.getElementById("campaignsCard").innerHTML = `
       <table>
-        <thead><tr><th>Nombre</th><th>Segmento</th><th>Estado</th><th>Programada</th><th>Enviada</th></tr></thead>
+        <thead><tr><th>Nombre</th><th>Segmentos</th><th>Plantilla</th><th>Estado</th><th>Programada</th><th>Enviada</th></tr></thead>
         <tbody>
           ${campaigns.map(c => `
             <tr>
               <td><strong>${escapeHtml(c.name)}</strong></td>
-              <td>${escapeHtml(c.segment.replaceAll("_", " "))}</td>
-              <td><span class="badge badge-${c.status==="sent"?"done":c.status==="scheduled"?"confirmed":"pending"}">${c.status}</span></td>
+              <td>${escapeHtml(segLabel(c))}</td>
+              <td>${c.message_template ? escapeHtml(c.message_template) : "—"}</td>
+              <td><span class="badge badge-${c.status==="sent"?"done":c.status==="scheduled"?"confirmed":"pending"}">${escapeHtml(c.status)}</span></td>
               <td>${c.scheduled_at ? fmtDateTime(c.scheduled_at) : "—"}</td>
               <td>${c.sent_at ? fmtDateTime(c.sent_at) : "—"}</td>
             </tr>
@@ -1632,37 +1675,177 @@ async function renderMarketing() {
   } catch (err) { toast(err.message, "error"); }
 }
 
+// Segmentos estándar del constructor de campañas
+const STD_SEGMENTS = [
+  { key: "inactivos", label: "Pacientes inactivos", desc: "Sin cita reciente" },
+  { key: "por_edad", label: "Por edad", desc: "Edades o rangos", detail: "age" },
+  { key: "por_tratamiento", label: "Por tratamiento", desc: "1 o varios", detail: "treat" },
+  { key: "presupuestos_no_aceptados", label: "Presupuestos no aceptados", desc: "Pendientes" },
+  { key: "manual", label: "Segmento manual", desc: "Selección a mano" },
+];
+function getCustomSegments() { try { return JSON.parse(localStorage.getItem("df_custom_segments") || "[]"); } catch { return []; } }
+function setCustomSegments(a) { localStorage.setItem("df_custom_segments", JSON.stringify(a)); }
+function segItemHtml(key, label, desc, detailType) {
+  return `
+    <div class="seg-item" data-item="${escapeHtml(key)}">
+      <label class="seg-head">
+        <input type="checkbox" class="seg-chk" data-seg="${escapeHtml(key)}">
+        <span>${escapeHtml(label)}</span>
+        <span class="seg-desc">${escapeHtml(desc)}</span>
+      </label>
+      ${detailType ? `<div class="seg-detail" data-detail="${detailType}" style="display:none"></div>` : ""}
+    </div>`;
+}
+
 function openCampaignModal() {
+  const stdHtml = STD_SEGMENTS.map(s => segItemHtml(s.key, s.label, s.desc, s.detail)).join("");
+  const customHtml = getCustomSegments().map(n => segItemHtml("custom:" + n, n, "Personalizado", null)).join("");
+
   openModal(`
     <h3>Nueva campaña</h3>
-    <div class="row single"><div class="field"><label>Nombre</label><input class="input" id="cmpName" placeholder="Recordatorio anual de revisión" /></div></div>
-    <div class="row">
-      <div class="field"><label>Segmento</label>
-        <select class="select" id="cmpSeg">
-          <option value="inactivos">Pacientes inactivos</option>
-          <option value="por_edad">Por edad</option>
-          <option value="por_tratamiento">Por tratamiento</option>
-          <option value="presupuestos_no_aceptados">Presupuestos no aceptados</option>
-          <option value="manual">Manual</option>
-        </select>
+    <div class="row single"><div class="field"><label>Nombre</label>
+      <input class="input" id="cmpName" placeholder="Recordatorio anual de revisión" /></div></div>
+
+    <div class="row single"><div class="field">
+      <label>Segmentos — elige uno o varios</label>
+      <div class="seg-list" id="segList">${stdHtml}${customHtml}</div>
+      <div class="seg-add">
+        <input class="input" id="newSegName" placeholder="Nombre de un segmento nuevo…" maxlength="40" />
+        <button type="button" class="btn" id="addSegBtn">+ Crear segmento</button>
       </div>
-      <div class="field"><label>Programar (opcional)</label><input class="input" type="datetime-local" id="cmpSched" /></div>
-    </div>
-    <div class="row single"><div class="field"><label>Plantilla del mensaje</label>
-      <textarea class="textarea" id="cmpMsg" rows="4" placeholder="Hola {{nombre}}, ..."></textarea>
     </div></div>
+
+    <div class="row">
+      <div class="field"><label>Plantilla del mensaje</label>
+        <select class="select" id="cmpTemplate"><option value="">Cargando plantillas…</option></select>
+        <small class="mini-note" id="tplHint"></small>
+      </div>
+      <div class="field"><label>Programar (opcional)</label>
+        <input class="input" type="datetime-local" id="cmpSched" /></div>
+    </div>
+
     <div class="actions">
       <button class="btn" onclick="closeModal()">Cancelar</button>
-      <button class="btn primary" id="saveCmp">Guardar</button>
+      <button class="btn primary" id="saveCmp">Guardar campaña</button>
     </div>
   `, { onMount: (body) => {
+    const ageRanges = [];
+
+    function wireSeg(item) {
+      const chk = item.querySelector(".seg-chk");
+      chk.addEventListener("change", () => {
+        item.classList.toggle("checked", chk.checked);
+        const detail = item.querySelector(".seg-detail");
+        if (!detail) return;
+        detail.style.display = chk.checked ? "flex" : "none";
+        if (chk.checked && !detail.dataset.loaded) buildDetail(detail);
+      });
+    }
+    body.querySelectorAll(".seg-item").forEach(wireSeg);
+
+    async function buildDetail(detail) {
+      detail.dataset.loaded = "1";
+      if (detail.dataset.detail === "treat") {
+        detail.innerHTML = `<div class="mini-note">Cargando tratamientos…</div>`;
+        try {
+          let list = cache.treatments;
+          if (!list || !list.length) { const r = await api("/api/treatments"); list = r.treatments || []; cache.treatments = list; }
+          const active = list.filter(t => t.active !== false);
+          detail.innerHTML = active.length
+            ? `<div class="chk-grid">${active.map(t => `
+                <label class="chk-row"><input type="checkbox" class="treat-chk" value="${escapeHtml(t.id)}"> ${escapeHtml(t.name)}</label>`).join("")}</div>`
+            : `<div class="mini-note">No hay tratamientos dados de alta (Configuración → Tratamientos).</div>`;
+        } catch (e) { detail.innerHTML = `<div class="mini-note">No se pudieron cargar los tratamientos.</div>`; }
+      } else if (detail.dataset.detail === "age") {
+        detail.innerHTML = `
+          <div class="row-flex">
+            <input class="input" type="number" min="0" max="120" id="ageFrom" placeholder="De" style="width:82px">
+            <span class="mini-note">–</span>
+            <input class="input" type="number" min="0" max="120" id="ageTo" placeholder="A" style="width:82px">
+            <button type="button" class="btn" id="addAge">Añadir</button>
+            <span class="mini-note">Deja "A" vacío para una edad concreta.</span>
+          </div>
+          <div class="chips" id="ageChips"></div>`;
+        const chips = detail.querySelector("#ageChips");
+        const renderChips = () => {
+          chips.innerHTML = ageRanges.map((r, i) => `
+            <span class="chip">${r.min}${r.max != null && r.max !== r.min ? "–" + r.max : ""} años
+              <button type="button" data-i="${i}">×</button></span>`).join("");
+          chips.querySelectorAll("button").forEach(b => b.onclick = () => { ageRanges.splice(+b.dataset.i, 1); renderChips(); });
+        };
+        detail.querySelector("#addAge").onclick = () => {
+          let f = parseInt(detail.querySelector("#ageFrom").value, 10);
+          let t = parseInt(detail.querySelector("#ageTo").value, 10);
+          if (Number.isNaN(f)) { toast("Indica una edad", "error"); return; }
+          if (f < 0 || f > 120) { toast("Edad fuera de rango (0–120)", "error"); return; }
+          if (Number.isNaN(t)) t = f;
+          ageRanges.push({ min: Math.min(f, t), max: Math.max(f, t) });
+          detail.querySelector("#ageFrom").value = ""; detail.querySelector("#ageTo").value = "";
+          renderChips();
+        };
+      }
+    }
+
+    // Crear segmento personalizado (se recuerda en el navegador para próximas campañas)
+    body.querySelector("#addSegBtn").onclick = () => {
+      const inp = body.querySelector("#newSegName");
+      const name = inp.value.trim();
+      if (!name) { toast("Escribe un nombre para el segmento", "error"); return; }
+      const custom = getCustomSegments();
+      const dup = custom.some(c => c.toLowerCase() === name.toLowerCase()) || STD_SEGMENTS.some(s => s.label.toLowerCase() === name.toLowerCase());
+      if (dup) { toast("Ese segmento ya existe", "error"); return; }
+      custom.push(name); setCustomSegments(custom);
+      const wrap = document.createElement("div");
+      wrap.innerHTML = segItemHtml("custom:" + name, name, "Personalizado", null);
+      const item = wrap.firstElementChild;
+      item.querySelector(".seg-chk").checked = true;
+      item.classList.add("checked");
+      wireSeg(item);
+      body.querySelector("#segList").appendChild(item);
+      inp.value = "";
+    };
+
+    // Cargar plantillas creadas en Meta para el desplegable
+    (async () => {
+      const sel = body.querySelector("#cmpTemplate");
+      const hint = body.querySelector("#tplHint");
+      try {
+        const { templates, configured } = await api("/api/marketing/templates");
+        if (!configured) {
+          sel.innerHTML = `<option value="">— sin plantillas —</option>`;
+          hint.textContent = "Conecta WhatsApp (WABA ID + token) para ver tus plantillas.";
+          return;
+        }
+        if (!templates || !templates.length) {
+          sel.innerHTML = `<option value="">— sin plantillas —</option>`;
+          hint.textContent = 'Crea una con el botón "Crear plantilla".';
+          return;
+        }
+        const st = { APPROVED: "Aprobada", PENDING: "En revisión", REJECTED: "Rechazada", PAUSED: "Pausada", DISABLED: "Deshabilitada" };
+        sel.innerHTML = `<option value="">— Selecciona una plantilla —</option>` +
+          templates.map(t => `<option value="${escapeHtml(t.name)}">${escapeHtml(t.name)} · ${st[t.status] || t.status || ""}${t.language ? " · " + escapeHtml(t.language) : ""}</option>`).join("");
+        hint.textContent = "Solo las plantillas Aprobadas pueden enviarse por WhatsApp.";
+      } catch (e) {
+        sel.innerHTML = `<option value="">— error al cargar —</option>`;
+        hint.textContent = e.message;
+      }
+    })();
+
     body.querySelector("#saveCmp").onclick = async () => {
+      const name = body.querySelector("#cmpName").value.trim();
+      const segments = [...body.querySelectorAll(".seg-chk:checked")].map(c => c.dataset.seg);
+      if (!name) { toast("Falta el nombre de la campaña", "error"); return; }
+      if (!segments.length) { toast("Selecciona al menos un segmento", "error"); return; }
+      const treatments = [...body.querySelectorAll(".treat-chk:checked")].map(c => c.value);
+      const scheduledRaw = body.querySelector("#cmpSched").value;
       try {
         await api("/api/campaigns", { method: "POST", body: {
-          name: body.querySelector("#cmpName").value.trim(),
-          segment: body.querySelector("#cmpSeg").value,
-          message_template: body.querySelector("#cmpMsg").value.trim(),
-          scheduled_at: body.querySelector("#cmpSched").value ? new Date(body.querySelector("#cmpSched").value).toISOString() : null,
+          name,
+          segments,
+          treatments,
+          age_ranges: ageRanges,
+          template_name: body.querySelector("#cmpTemplate").value,
+          scheduled_at: scheduledRaw ? new Date(scheduledRaw).toISOString() : null,
         }});
         toast("Campaña creada", "success"); closeModal(); renderMarketing();
       } catch (err) { toast(err.message, "error"); }

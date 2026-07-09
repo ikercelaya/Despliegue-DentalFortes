@@ -653,15 +653,41 @@ app.get("/api/campaigns", requireAuth, async (_req, res) => {
 
 app.post("/api/campaigns", requireAuth, async (req, res) => {
   try {
-    const { name, segment, segment_config, message_template, scheduled_at } = req.body || {};
-    if (!name || !segment || !message_template) return res.status(400).json({ error: "Faltan datos." });
+    const b = req.body || {};
+    const name = String(b.name || "").trim();
+
+    // Formato nuevo: segments[] (puede incluir "custom:Nombre").
+    // Compatibilidad con el formato antiguo (segment único).
+    let segments = Array.isArray(b.segments) ? b.segments.map((s) => String(s).trim()).filter(Boolean) : [];
+    if (!segments.length && b.segment) segments = [String(b.segment).trim()];
+    const templateName = String(b.template_name || b.message_template || "").trim();
+
+    if (!name) return res.status(400).json({ error: "Falta el nombre de la campaña." });
+    if (!segments.length) return res.status(400).json({ error: "Selecciona al menos un segmento." });
+
+    const STANDARD = ["por_edad", "por_tratamiento", "presupuestos_no_aceptados", "inactivos", "manual"];
+    // La columna 'segment' tiene CHECK: guardamos ahí el primer segmento estándar (o 'manual').
+    const primarySegment = segments.find((s) => STANDARD.includes(s)) || "manual";
+    const customSegments = segments.filter((s) => s.startsWith("custom:")).map((s) => s.slice(7));
+
+    const baseConfig = b.segment_config && typeof b.segment_config === "object" ? b.segment_config : {};
+    const segment_config = {
+      ...baseConfig,
+      segments,
+      treatments: Array.isArray(b.treatments) ? b.treatments : (baseConfig.treatments || []),
+      age_ranges: Array.isArray(b.age_ranges) ? b.age_ranges : (baseConfig.age_ranges || []),
+      custom_segments: customSegments,
+      template_name: templateName,
+    };
+
     const { data, error } = await supabase
       .from("df_campaigns").insert({
-        name, segment,
-        segment_config: segment_config || {},
-        message_template,
-        scheduled_at: scheduled_at || null,
-        status: scheduled_at ? "scheduled" : "draft",
+        name,
+        segment: primarySegment,
+        segment_config,
+        message_template: templateName, // columna NOT NULL: guardamos el nombre de la plantilla
+        scheduled_at: b.scheduled_at || null,
+        status: b.scheduled_at ? "scheduled" : "draft",
       }).select().single();
     if (error) throw error;
     return res.json({ campaign: data });
@@ -681,6 +707,26 @@ app.patch("/api/campaigns/:id", requireAuth, async (req, res) => {
     return res.json({ campaign: data });
   } catch (err) {
     return res.status(500).json({ error: err.message });
+  }
+});
+
+// Listar las plantillas creadas en Meta (para el desplegable de campañas).
+app.get("/api/marketing/templates", requireAuth, async (_req, res) => {
+  try {
+    const wabaId = process.env.WHATSAPP_BUSINESS_ACCOUNT_ID || process.env.WABA_ID || "";
+    const token = process.env.WHATSAPP_TOKEN || "";
+    if (!wabaId || !token) return res.json({ templates: [], configured: false });
+
+    const url = `${META_GRAPH_BASE}/${wabaId}/message_templates?limit=200&fields=name,status,category,language`;
+    const metaRes = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+    const metaData = await metaRes.json().catch(() => ({}));
+    if (!metaRes.ok) {
+      const detail = metaData?.error?.error_user_msg || metaData?.error?.message || `Meta Graph ${metaRes.status}`;
+      return res.status(502).json({ error: detail, templates: [], configured: true });
+    }
+    return res.json({ templates: metaData.data || [], configured: true });
+  } catch (err) {
+    return res.status(500).json({ error: err.message, templates: [] });
   }
 });
 
