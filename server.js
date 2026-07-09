@@ -735,12 +735,12 @@ app.get("/api/marketing/diagnose", requireAuth, async (_req, res) => {
     return res.json(report);
   }
 
-  // 1) ¿El token puede LEER la WABA configurada?
+  // 1) ¿El token puede LEER la WABA configurada? (y en qué estado está)
   try {
-    const r = await fetch(`${META_GRAPH_BASE}/${wabaId}?fields=name,id`, { headers: { Authorization: `Bearer ${token}` } });
+    const r = await fetch(`${META_GRAPH_BASE}/${wabaId}?fields=name,id,account_review_status,business_verification_status`, { headers: { Authorization: `Bearer ${token}` } });
     const d = await r.json().catch(() => ({}));
     report.checks.leer_waba = r.ok
-      ? { ok: true, nombre: d.name || null }
+      ? { ok: true, nombre: d.name || null, review: d.account_review_status || null, verificacion: d.business_verification_status || null }
       : { ok: false, error: d?.error?.message || `HTTP ${r.status}`, code: d?.error?.code };
   } catch (e) { report.checks.leer_waba = { ok: false, error: e.message }; }
 
@@ -790,7 +790,12 @@ app.get("/api/marketing/diagnose", requireAuth, async (_req, res) => {
   } else if (!report.checks.leer_waba?.ok || !report.checks.listar_plantillas?.ok) {
     report.conclusion = "El token o la WABA de Vercel no pueden gestionar esa cuenta. Revisa que WHATSAPP_TOKEN y WHATSAPP_BUSINESS_ACCOUNT_ID en Vercel sean exactamente los que funcionan, y haz Redeploy.";
   } else {
-    report.conclusion = "El token puede LEER pero NO CREAR plantillas. Es un bloqueo de estado de la cuenta/app en Meta. Prueba, en este orden: (1) rol del usuario del sistema a Administrador, (2) app en modo 'En vivo', (3) 'Acceso avanzado' del permiso whatsapp_business_management, (4) verificación del negocio.";
+    const review = report.checks.leer_waba?.review;
+    let extra = "";
+    if (review && review !== "APPROVED") {
+      extra = ` OJO: la revisión de la cuenta (account_review_status) está en "${review}", no en "APPROVED". Mientras no esté APPROVED, Meta bloquea crear plantillas. Suele aprobarse sola en unas horas; si no, revisa que el número esté verificado y con método de pago activo.`;
+    }
+    report.conclusion = "El token puede LEER pero NO CREAR plantillas. Prueba, en este orden: (1) regenerar el token del usuario del sistema (con rol Administrador) y actualizarlo en Vercel, (2) app en modo 'En vivo', (3) 'Acceso avanzado' del permiso whatsapp_business_management." + extra;
   }
   return res.json(report);
 });
