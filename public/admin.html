@@ -1635,12 +1635,14 @@ async function renderMarketing() {
       <div class="actions">
         <button class="btn primary" id="newCampaignBtn">+ Nueva campaña</button>
         <button class="btn" id="newTemplateBtn">Crear plantilla</button>
+        <button class="btn" id="diagBtn" title="Comprueba la conexión con Meta (WhatsApp)">Diagnóstico</button>
       </div>
     </div>
     <div class="card" id="campaignsCard"><div class="empty-state">Cargando…</div></div>
   `;
   document.getElementById("newCampaignBtn").onclick = () => openCampaignModal();
   document.getElementById("newTemplateBtn").onclick = () => openMetaTemplateModal();
+  document.getElementById("diagBtn").onclick = () => openDiagnoseModal();
   try {
     const { campaigns } = await api("/api/campaigns");
     if (!campaigns.length) {
@@ -1938,6 +1940,37 @@ function openMetaTemplateModal() {
         btn.textContent = "Crear en Meta";
       }
     };
+  }});
+}
+
+// Diagnóstico de la conexión con Meta (WhatsApp) — usa las variables reales del servidor
+function openDiagnoseModal() {
+  openModal(`
+    <h3>Diagnóstico de WhatsApp / Meta</h3>
+    <div id="diagBody" class="empty-state" style="text-align:left;padding:8px 2px">Comprobando…</div>
+    <div class="actions"><button class="btn" onclick="closeModal()">Cerrar</button></div>
+  `, { onMount: async (body) => {
+    const el = body.querySelector("#diagBody");
+    const row = (label, ok, extra) =>
+      `<div style="display:flex;gap:8px;align-items:baseline;padding:5px 0;border-bottom:1px solid var(--line)">
+        <span style="width:16px">${ok === null ? "•" : ok ? "✅" : "❌"}</span>
+        <div><strong>${escapeHtml(label)}</strong>${extra ? `<div class="mini-note">${escapeHtml(extra)}</div>` : ""}</div>
+      </div>`;
+    try {
+      const r = await api("/api/marketing/diagnose");
+      const c = r.checks || {};
+      el.innerHTML = `
+        ${row("WHATSAPP_BUSINESS_ACCOUNT_ID (WABA)", r.env.waba_id_set, r.env.waba_id || "no configurado")}
+        ${row("WHATSAPP_TOKEN", r.env.token_set, r.env.token_preview || "no configurado")}
+        ${row("WHATSAPP_PHONE_NUMBER_ID", r.env.phone_number_id_set, r.env.phone_number_id_set ? "configurado" : "no configurado")}
+        ${row("El token puede leer la WABA", c.leer_waba ? c.leer_waba.ok : null, c.leer_waba ? (c.leer_waba.ok ? "Cuenta: " + (c.leer_waba.nombre || "") : (c.leer_waba.error || "") + (c.leer_waba.code ? " (código " + c.leer_waba.code + ")" : "")) : "no comprobado")}
+        ${row("El token puede gestionar plantillas", c.listar_plantillas ? c.listar_plantillas.ok : null, c.listar_plantillas ? (c.listar_plantillas.ok ? "Acceso correcto" : (c.listar_plantillas.error || "") + (c.listar_plantillas.code ? " (código " + c.listar_plantillas.code + ")" : "")) : "no comprobado")}
+        <div style="margin-top:12px;padding:10px 12px;border-radius:8px;background:${r.ok ? "rgba(74,222,128,0.12)" : "rgba(248,113,113,0.12)"};color:${r.ok ? "#86efac" : "#fca5a5"}">
+          <strong>${r.ok ? "Conexión correcta" : "Hay un problema"}</strong><br>${escapeHtml(r.conclusion || "")}
+        </div>`;
+    } catch (err) {
+      el.innerHTML = `<div style="color:var(--danger)">No se pudo ejecutar el diagnóstico: ${escapeHtml(err.message)}</div>`;
+    }
   }});
 }
 

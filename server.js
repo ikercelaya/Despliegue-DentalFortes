@@ -710,6 +710,56 @@ app.patch("/api/campaigns/:id", requireAuth, async (req, res) => {
   }
 });
 
+// Diagnóstico de la conexión con Meta (usa las MISMAS variables que el CRM).
+// Sirve para saber si el problema al crear plantillas está en Vercel o en Meta.
+app.get("/api/marketing/diagnose", requireAuth, async (_req, res) => {
+  const wabaId = process.env.WHATSAPP_BUSINESS_ACCOUNT_ID || process.env.WABA_ID || "";
+  const token = process.env.WHATSAPP_TOKEN || "";
+  const mask = (t) => (t ? `${t.slice(0, 6)}…${t.slice(-4)} (${t.length} caracteres)` : null);
+  const report = {
+    env: {
+      waba_id_set: !!wabaId,
+      waba_id: wabaId || null,
+      token_set: !!token,
+      token_preview: mask(token),
+      phone_number_id_set: !!process.env.WHATSAPP_PHONE_NUMBER_ID,
+      graph_version: META_GRAPH_VERSION,
+    },
+    checks: {},
+    ok: false,
+    conclusion: "",
+  };
+
+  if (!wabaId || !token) {
+    report.conclusion = "Faltan WHATSAPP_BUSINESS_ACCOUNT_ID o WHATSAPP_TOKEN en Vercel. Añádelos y haz Redeploy.";
+    return res.json(report);
+  }
+
+  // 1) ¿El token puede LEER la WABA configurada?
+  try {
+    const r = await fetch(`${META_GRAPH_BASE}/${wabaId}?fields=name,id`, { headers: { Authorization: `Bearer ${token}` } });
+    const d = await r.json().catch(() => ({}));
+    report.checks.leer_waba = r.ok
+      ? { ok: true, nombre: d.name || null }
+      : { ok: false, error: d?.error?.message || `HTTP ${r.status}`, code: d?.error?.code };
+  } catch (e) { report.checks.leer_waba = { ok: false, error: e.message }; }
+
+  // 2) ¿El token puede LISTAR plantillas de esa WABA? (mismo permiso que crearlas)
+  try {
+    const r = await fetch(`${META_GRAPH_BASE}/${wabaId}/message_templates?limit=1`, { headers: { Authorization: `Bearer ${token}` } });
+    const d = await r.json().catch(() => ({}));
+    report.checks.listar_plantillas = r.ok
+      ? { ok: true, total_muestra: (d.data || []).length }
+      : { ok: false, error: d?.error?.message || `HTTP ${r.status}`, code: d?.error?.code };
+  } catch (e) { report.checks.listar_plantillas = { ok: false, error: e.message }; }
+
+  report.ok = !!(report.checks.leer_waba?.ok && report.checks.listar_plantillas?.ok);
+  report.conclusion = report.ok
+    ? "El token y la WABA de Vercel funcionan correctamente. Si 'Crear plantilla' sigue fallando, el permiso whatsapp_business_management de tu app necesita 'Acceso avanzado' (App Review) o la app aún está en modo desarrollo con restricciones."
+    : "El token o la WABA que tiene Vercel NO pueden gestionar esa cuenta. Casi seguro: WHATSAPP_TOKEN o WHATSAPP_BUSINESS_ACCOUNT_ID en Vercel no son exactamente los que funcionan por curl, o falta Redeploy tras cambiarlos.";
+  return res.json(report);
+});
+
 // Listar las plantillas creadas en Meta (para el desplegable de campañas).
 app.get("/api/marketing/templates", requireAuth, async (_req, res) => {
   try {
