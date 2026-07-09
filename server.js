@@ -753,10 +753,45 @@ app.get("/api/marketing/diagnose", requireAuth, async (_req, res) => {
       : { ok: false, error: d?.error?.message || `HTTP ${r.status}`, code: d?.error?.code };
   } catch (e) { report.checks.listar_plantillas = { ok: false, error: e.message }; }
 
-  report.ok = !!(report.checks.leer_waba?.ok && report.checks.listar_plantillas?.ok);
-  report.conclusion = report.ok
-    ? "El token y la WABA de Vercel funcionan correctamente. Si 'Crear plantilla' sigue fallando, el permiso whatsapp_business_management de tu app necesita 'Acceso avanzado' (App Review) o la app aún está en modo desarrollo con restricciones."
-    : "El token o la WABA que tiene Vercel NO pueden gestionar esa cuenta. Casi seguro: WHATSAPP_TOKEN o WHATSAPP_BUSINESS_ACCOUNT_ID en Vercel no son exactamente los que funcionan por curl, o falta Redeploy tras cambiarlos.";
+  // 3) Prueba REAL de creación: crea una plantilla de prueba y la borra.
+  //    Es la única forma fiable de saber si el permiso de ESCRITURA funciona.
+  try {
+    const testName = "crm_diagnostico_" + Date.now();
+    const payload = {
+      name: testName, category: "UTILITY", language: "es_ES",
+      components: [{ type: "BODY", text: "Prueba de diagnostico del CRM. Se elimina automaticamente." }],
+    };
+    const r = await fetch(`${META_GRAPH_BASE}/${wabaId}/message_templates`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (r.ok) {
+      report.checks.crear_plantilla = { ok: true, nota: "Creación permitida (plantilla de prueba eliminada)." };
+      // limpiar la plantilla de prueba
+      await fetch(`${META_GRAPH_BASE}/${wabaId}/message_templates?name=${encodeURIComponent(testName)}`, {
+        method: "DELETE", headers: { Authorization: `Bearer ${token}` },
+      }).catch(() => {});
+    } else {
+      const e = d?.error || {};
+      report.checks.crear_plantilla = {
+        ok: false,
+        error: e.error_user_msg || e.message || `HTTP ${r.status}`,
+        code: e.code, subcode: e.error_subcode,
+      };
+    }
+  } catch (e) { report.checks.crear_plantilla = { ok: false, error: e.message }; }
+
+  const cr = report.checks.crear_plantilla;
+  report.ok = !!(cr && cr.ok);
+  if (cr && cr.ok) {
+    report.conclusion = "¡Todo correcto! El CRM puede crear plantillas en Meta. Ya puedes usar 'Crear plantilla'.";
+  } else if (!report.checks.leer_waba?.ok || !report.checks.listar_plantillas?.ok) {
+    report.conclusion = "El token o la WABA de Vercel no pueden gestionar esa cuenta. Revisa que WHATSAPP_TOKEN y WHATSAPP_BUSINESS_ACCOUNT_ID en Vercel sean exactamente los que funcionan, y haz Redeploy.";
+  } else {
+    report.conclusion = "El token puede LEER pero NO CREAR plantillas. Es un bloqueo de estado de la cuenta/app en Meta. Prueba, en este orden: (1) rol del usuario del sistema a Administrador, (2) app en modo 'En vivo', (3) 'Acceso avanzado' del permiso whatsapp_business_management, (4) verificación del negocio.";
+  }
   return res.json(report);
 });
 
