@@ -11,6 +11,6 @@
     { "src": "/(.*)", "dest": "server.js" }
   ],
   "crons": [
-    { "path": "/api/cron/reminders", "schedule": "0 * * * *" }
+    { "path": "/api/cron/reminders", "schedule": "0 8 * * *" }
   ]
 }
