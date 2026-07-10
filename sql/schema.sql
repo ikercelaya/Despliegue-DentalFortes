@@ -184,7 +184,7 @@ create table if not exists public.df_reviews (
   id uuid primary key default gen_random_uuid(),
   patient_id uuid references public.df_patients(id) on delete set null,
   appointment_id uuid references public.df_appointments(id) on delete set null,
-  rating smallint check (rating between 1 and 5),
+  rating numeric(2,1) check (rating between 1 and 5), -- admite medias notas (p. ej. 4.5)
   comment text,
   routed_to text check (routed_to in ('google','internal')),
   status text not null default 'pending' check (status in ('pending','sent_to_google','handled_internal','closed')),
