@@ -15,6 +15,7 @@ create table if not exists public.df_professionals (
   specialty text not null,
   color text default '#9ca3af',
   active boolean not null default true,
+  is_generalist boolean not null default false, -- true = odontología general (citas reasignables entre generalistas)
   notes text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
@@ -132,6 +133,12 @@ create table if not exists public.df_appointments (
   status text not null default 'pending' check (status in ('pending','confirmed','cancelled','done','no_show')),
   is_first_visit boolean not null default false,
   is_urgent boolean not null default false,
+  cabinet smallint,                               -- nº de gabinete (1..N) para citas simultáneas
+  confirmed_at timestamptz,                        -- cuándo confirmó el paciente
+  reminder_3d_at timestamptz,                      -- recordatorio a 3 días enviado
+  reminder_1d_at timestamptz,                      -- recordatorio a 1 día enviado
+  reminder_6h_at timestamptz,                      -- recordatorio a 6 horas enviado
+  auto_cancelled boolean not null default false,   -- cancelada automáticamente por no confirmar
   source text not null default 'manual' check (source in ('manual','bot_web','bot_whatsapp','form')),
   notes text,
   created_at timestamptz not null default now(),

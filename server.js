@@ -5,10 +5,12 @@ require("dotenv").config();
 process.env.TZ = "Europe/Madrid";
 
 const path = require("path");
+const crypto = require("crypto");
 const express = require("express");
 
 const { supabase } = require("./lib/db");
 const { issueToken, checkPassword, requireAuth } = require("./lib/auth");
+const { assignCabinet, CAPACITY_REASONS } = require("./lib/scheduling");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -171,17 +173,39 @@ app.post("/api/appointments", requireAuth, async (req, res) => {
   try {
     const body = req.body || {};
     if (!body.starts_at || !body.ends_at) return res.status(400).json({ error: "Faltan fechas." });
+    const isFirstVisit = !!body.is_first_visit;
+    let cabinet = body.cabinet != null ? Number(body.cabinet) : null;
+
+    // Capacidad y gabinete (reglas de agenda). El personal puede forzar con force:true.
+    if (!body.force) {
+      const cap = await assignCabinet({
+        supabase,
+        startISO: body.starts_at,
+        endISO: body.ends_at,
+        isFirstVisit,
+        professionalId: body.professional_id || null,
+        desiredCabinet: cabinet, // si el personal eligió gabinete, se valida que esté libre
+      });
+      if (!cap.ok) {
+        return res.status(409).json({ error: CAPACITY_REASONS[cap.reason] || "Sin disponibilidad a esa hora.", reason: cap.reason });
+      }
+      cabinet = cap.cabinet; // usa el gabinete validado (respeta el elegido si estaba libre)
+    }
+
+    const status = body.status || "pending";
     const { data, error } = await supabase
       .from("df_appointments")
       .insert({
         patient_id: body.patient_id || null,
         professional_id: body.professional_id || null,
         treatment_id: body.treatment_id || null,
+        cabinet,
         starts_at: body.starts_at,
         ends_at: body.ends_at,
-        status: body.status || "pending",
-        is_first_visit: !!body.is_first_visit,
+        status,
+        is_first_visit: isFirstVisit,
         is_urgent: !!body.is_urgent,
+        confirmed_at: status === "confirmed" ? new Date().toISOString() : null,
         source: body.source || "manual",
         notes: body.notes || null,
       })
@@ -197,9 +221,44 @@ app.post("/api/appointments", requireAuth, async (req, res) => {
 
 app.patch("/api/appointments/:id", requireAuth, async (req, res) => {
   try {
-    const allowed = ["patient_id","professional_id","treatment_id","starts_at","ends_at","status","is_first_visit","is_urgent","notes"];
+    const body = req.body || {};
+    const allowed = ["patient_id","professional_id","treatment_id","cabinet","starts_at","ends_at","status","is_first_visit","is_urgent","notes"];
     const patch = {};
-    for (const k of allowed) if (k in (req.body || {})) patch[k] = req.body[k];
+    for (const k of allowed) if (k in body) patch[k] = body[k];
+
+    // Revalida capacidad SOLO si el tramo/profesional/tipo/gabinete cambia de verdad
+    // (el panel reenvía esos campos aunque no los toques; comparándolos con el valor
+    // actual evitamos 409 espurios al editar solo notas/estado, p. ej. al confirmar).
+    const touchesScheduleKeys = ["starts_at","ends_at","professional_id","is_first_visit","cabinet"].some((k) => k in patch);
+    if (touchesScheduleKeys && !body.force) {
+      const { data: cur } = await supabase.from("df_appointments").select("*").eq("id", req.params.id).maybeSingle();
+      if (cur) {
+        const sameTime = (a, b) => { const x = Date.parse(a), y = Date.parse(b); return !isNaN(x) && !isNaN(y) && x === y; };
+        const changed =
+          ("starts_at" in patch && !sameTime(patch.starts_at, cur.starts_at)) ||
+          ("ends_at" in patch && !sameTime(patch.ends_at, cur.ends_at)) ||
+          ("professional_id" in patch && (patch.professional_id || null) !== (cur.professional_id || null)) ||
+          ("is_first_visit" in patch && !!patch.is_first_visit !== !!cur.is_first_visit) ||
+          ("cabinet" in patch && Number(patch.cabinet || 0) !== Number(cur.cabinet || 0));
+        if (changed) {
+          const startISO = patch.starts_at || cur.starts_at;
+          const endISO = patch.ends_at || cur.ends_at;
+          const isFV = "is_first_visit" in patch ? !!patch.is_first_visit : !!cur.is_first_visit;
+          const proId = "professional_id" in patch ? (patch.professional_id || null) : cur.professional_id;
+          const desired = "cabinet" in patch ? patch.cabinet : cur.cabinet;
+          const cap = await assignCabinet({ supabase, startISO, endISO, isFirstVisit: isFV, professionalId: proId, excludeId: cur.id, desiredCabinet: desired });
+          if (!cap.ok) {
+            return res.status(409).json({ error: CAPACITY_REASONS[cap.reason] || "Sin disponibilidad a esa hora.", reason: cap.reason });
+          }
+          patch.cabinet = cap.cabinet; // gabinete validado
+        }
+      }
+    }
+
+    // Confirmación: al pasar a 'confirmed' sella la fecha; al reabrir a 'pending' la limpia.
+    if (patch.status === "confirmed") patch.confirmed_at = new Date().toISOString();
+    else if (patch.status === "pending") patch.confirmed_at = null;
+
     const { data, error } = await supabase
       .from("df_appointments")
       .update(patch)
@@ -220,6 +279,164 @@ app.delete("/api/appointments/:id", requireAuth, async (req, res) => {
     if (error) throw error;
     return res.json({ ok: true });
   } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// =============================================================
+// CONFIRMACIÓN DE CITAS + RECORDATORIOS (cadencia 3 días / 1 día / 6 horas)
+// -------------------------------------------------------------
+// El paciente confirma con un enlace con token (público). Un cron recorre la
+// cadencia de recordatorios y, si está activado, autocancela las no confirmadas
+// para liberar el hueco.
+// =============================================================
+const CONFIRM_SECRET = process.env.CONFIRM_SECRET || process.env.SESSION_SECRET || process.env.ADMIN_PASSWORD || "df-confirm-secret";
+const AUTO_CANCEL_HOURS = Number(process.env.AUTO_CANCEL_HOURS || 2);
+const AUTO_CANCEL_ENABLED = /^(1|true|si|sí|on)$/i.test(String(process.env.AUTO_CANCEL_ENABLED || ""));
+
+function confirmToken(id) {
+  return crypto.createHmac("sha256", CONFIRM_SECRET).update(String(id)).digest("hex").slice(0, 32);
+}
+function confirmLink(id) {
+  return `${PUBLIC_URL}/api/appointments/${id}/confirm?t=${confirmToken(id)}`;
+}
+function confirmPage(message) {
+  return `<!doctype html><html lang="es"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dental Fortes</title>
+<style>body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#0f0f0f;color:#ececec;
+display:flex;min-height:100vh;align-items:center;justify-content:center;margin:0;padding:24px}
+.card{max-width:420px;text-align:center;background:#181818;border:1px solid #2a2a2a;border-radius:16px;padding:32px}
+h1{font-size:18px;margin:0 0 8px}p{color:#b8b8b8;margin:0}</style></head>
+<body><div class="card"><h1>Dental Fortes</h1><p>${message}</p></div></body></html>`;
+}
+
+// Confirmación pública (el paciente pincha el enlace del recordatorio).
+app.get("/api/appointments/:id/confirm", async (req, res) => {
+  res.set("Content-Type", "text/html; charset=utf-8");
+  try {
+    const id = req.params.id;
+    const expBuf = Buffer.from(confirmToken(id));
+    const gotBuf = Buffer.from(String(req.query.t || ""));
+    const valid = gotBuf.length === expBuf.length && crypto.timingSafeEqual(gotBuf, expBuf);
+    if (!valid) return res.status(403).send(confirmPage("Enlace no válido."));
+    const { data: appt } = await supabase
+      .from("df_appointments").select("id, status").eq("id", id).maybeSingle();
+    if (!appt) return res.status(404).send(confirmPage("No hemos encontrado la cita."));
+    if (appt.status === "cancelled") {
+      return res.status(200).send(confirmPage("Esta cita estaba cancelada. Por favor, contacte con la clínica."));
+    }
+    if (appt.status !== "pending" && appt.status !== "confirmed") {
+      // 'done' / 'no_show': ya no tiene sentido confirmarla.
+      return res.status(200).send(confirmPage("Esta cita ya no está activa. Si necesita algo, contacte con la clínica."));
+    }
+    if (appt.status === "confirmed") {
+      return res.status(200).send(confirmPage("Su cita ya estaba confirmada. ¡Le esperamos!"));
+    }
+    await supabase.from("df_appointments")
+      .update({ status: "confirmed", confirmed_at: new Date().toISOString() }).eq("id", id);
+    return res.status(200).send(confirmPage("¡Gracias! Su cita ha quedado confirmada."));
+  } catch (err) {
+    console.error("[confirm]", err);
+    return res.status(500).send(confirmPage("No se ha podido confirmar ahora mismo. Inténtelo más tarde."));
+  }
+});
+
+// Cadencia de recordatorios: cada tramo se envía una vez dentro de su ventana.
+const REMINDER_STEPS = [
+  { field: "reminder_3d_at", fromH: 24, toH: 72, label: "3 días" },
+  { field: "reminder_1d_at", fromH: 6, toH: 24, label: "1 día" },
+  { field: "reminder_6h_at", fromH: 0, toH: 6, label: "6 horas" },
+];
+
+function reminderText(appt, _label) {
+  const cuando = new Date(appt.starts_at).toLocaleString("es-ES", {
+    weekday: "long", day: "2-digit", month: "long", hour: "2-digit", minute: "2-digit", timeZone: "Europe/Madrid",
+  });
+  const nombre = appt.df_patients?.full_name ? " " + String(appt.df_patients.full_name).split(" ")[0] : "";
+  return `Hola${nombre}, le recordamos su cita en Dental Fortes el ${cuando}. ` +
+    `Por favor, confírmela para mantenerla: ${confirmLink(appt.id)} ` +
+    `Si no se confirma, el hueco podría liberarse. Gracias.`;
+}
+
+async function runReminders() {
+  const wa = require("./lib/whatsapp");
+  const now = Date.now();
+  const iso = (h) => new Date(now + h * 3600000).toISOString();
+  const result = { sent: 0, cancelled: 0, processed: 0, errors: [], autoCancelEnabled: AUTO_CANCEL_ENABLED };
+
+  // 1) Recordatorios por cada tramo de la cadencia.
+  for (const step of REMINDER_STEPS) {
+    const { data: appts } = await supabase
+      .from("df_appointments")
+      .select("id, starts_at, status, df_patients(full_name, phone)")
+      .in("status", ["pending", "confirmed"])
+      .is(step.field, null)
+      .gt("starts_at", iso(step.fromH))
+      .lte("starts_at", iso(step.toH));
+    for (const a of appts || []) {
+      result.processed++;
+      const phone = a.df_patients?.phone;
+      let sent = false;
+      try {
+        // Solo tiene sentido recordar las que aún están pendientes de confirmar.
+        if (a.status !== "confirmed" && phone && wa.isConfigured()) {
+          await wa.sendText(phone, reminderText(a, step.label));
+          result.sent++;
+          sent = true;
+        }
+      } catch (e) {
+        result.errors.push(`${a.id} (${step.label}): ${e.message}`);
+      }
+      // Marca el tramo SOLO si el recordatorio se envió de verdad (o si ya está
+      // confirmada y no necesita aviso). Si no se pudo avisar, se deja para el
+      // próximo intento y NUNCA se autocancela sin haber avisado al paciente.
+      if (sent || a.status === "confirmed") {
+        await supabase.from("df_appointments").update({ [step.field]: new Date().toISOString() }).eq("id", a.id);
+      }
+    }
+  }
+
+  // 2) Autocancelación de citas NO confirmadas (si está habilitada).
+  //    Requiere que ya se les enviara el recordatorio de 6h hace >1h.
+  if (AUTO_CANCEL_ENABLED) {
+    const graceISO = new Date(now - 3600000).toISOString();
+    const { data: toCancel } = await supabase
+      .from("df_appointments")
+      .select("id, notes")
+      .eq("status", "pending")
+      .is("confirmed_at", null)
+      .not("reminder_6h_at", "is", null)
+      .lt("reminder_6h_at", graceISO)
+      .gt("starts_at", new Date(now).toISOString())
+      .lte("starts_at", iso(AUTO_CANCEL_HOURS));
+    for (const a of toCancel || []) {
+      await supabase.from("df_appointments").update({
+        status: "cancelled",
+        auto_cancelled: true,
+        notes: [a.notes, "Cancelada automáticamente por falta de confirmación"].filter(Boolean).join(" · "),
+      }).eq("id", a.id);
+      result.cancelled++;
+    }
+  }
+  return result;
+}
+
+function checkCronAuth(req) {
+  const secret = process.env.CRON_SECRET;
+  if (!secret) return true; // sin secreto: se permite (protégelo con CRON_SECRET en Vercel)
+  if ((req.get("authorization") || "") === `Bearer ${secret}`) return true;
+  if (String(req.query.key || "") === secret) return true;
+  return false;
+}
+
+app.get("/api/cron/reminders", async (req, res) => {
+  if (!checkCronAuth(req)) return res.sendStatus(401);
+  try {
+    const result = await runReminders();
+    return res.json({ ok: true, ...result });
+  } catch (err) {
+    console.error("[cron/reminders]", err);
     return res.status(500).json({ error: err.message });
   }
 });
@@ -407,10 +624,10 @@ app.get("/api/professionals", requireAuth, async (_req, res) => {
 
 app.post("/api/professionals", requireAuth, async (req, res) => {
   try {
-    const { name, specialty, color, schedules } = req.body || {};
+    const { name, specialty, color, schedules, is_generalist } = req.body || {};
     if (!name || !specialty) return res.status(400).json({ error: "Faltan datos." });
     const { data: pro, error } = await supabase
-      .from("df_professionals").insert({ name, specialty, color: color || "#9ca3af" })
+      .from("df_professionals").insert({ name, specialty, color: color || "#9ca3af", is_generalist: !!is_generalist })
       .select().single();
     if (error) throw error;
     if (Array.isArray(schedules) && schedules.length) {
@@ -430,7 +647,7 @@ app.post("/api/professionals", requireAuth, async (req, res) => {
 
 app.patch("/api/professionals/:id", requireAuth, async (req, res) => {
   try {
-    const allowed = ["name","specialty","color","active","notes"];
+    const allowed = ["name","specialty","color","active","notes","is_generalist"];
     const patch = {};
     for (const k of allowed) if (k in (req.body || {})) patch[k] = req.body[k];
     const { data, error } = await supabase

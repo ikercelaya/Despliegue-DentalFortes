@@ -90,6 +90,11 @@ select id, 0, '09:30'::time, '14:00'::time from ana
 union all
 select id, 0, '15:00'::time, '20:00'::time from ana;
 
+-- Generalistas (odontología general): sus citas se pueden reasignar entre ellos
+-- para rellenar huecos. Según Juan, las generalistas son Irene y Mishell.
+update public.df_professionals set is_generalist = true
+  where specialty ilike '%general%' or name ilike '%irene%' or name ilike '%mishel%';
+
 -- Catálogo mínimo de tratamientos (placeholder, el cliente lo completará)
 insert into public.df_treatments (name, duration_minutes, is_first_visit) values
   ('Primera visita', 30, true),

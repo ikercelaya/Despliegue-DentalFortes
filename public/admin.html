@@ -1390,6 +1390,21 @@ async function openAppointmentModal(id) {
         </div>
       </div>
     </div>
+    <div class="row">
+      <div class="field"><label>Gabinete</label>
+        <select class="select" id="apCabinet">
+          <option value="">Automático</option>
+          <option value="1" ${existing?.cabinet==1?"selected":""}>Gabinete 1</option>
+          <option value="2" ${existing?.cabinet==2?"selected":""}>Gabinete 2</option>
+          <option value="3" ${existing?.cabinet==3?"selected":""}>Gabinete 3</option>
+        </select>
+      </div>
+      <div class="field"><label>Reglas de agenda</label>
+        <label style="font-size:13px;color:var(--text-2);display:flex;align-items:center;gap:6px;padding:9px 0">
+          <input type="checkbox" id="apForce" /> Forzar (saltar límite de gabinetes/solapes)
+        </label>
+      </div>
+    </div>
     <div class="row single"><div class="field"><label>Notas</label><textarea class="textarea" id="apNotes" rows="2">${escapeHtml(existing?.notes||"")}</textarea></div></div>
     <div class="actions">
       ${existing ? `<button class="btn danger" id="delAppt" style="margin-right:auto">Eliminar</button>` : ""}
@@ -1442,6 +1457,8 @@ async function openAppointmentModal(id) {
         status: body.querySelector("#apStatus").value,
         is_first_visit: body.querySelector("#apFirst").checked,
         is_urgent: body.querySelector("#apUrg").checked,
+        cabinet: body.querySelector("#apCabinet").value ? Number(body.querySelector("#apCabinet").value) : null,
+        force: body.querySelector("#apForce").checked,
         notes: body.querySelector("#apNotes").value.trim() || null,
       };
       try {
@@ -2027,6 +2044,15 @@ function openProfessionalModal(existing) {
         <select class="select" id="proActive"><option value="true" ${p.active!==false?"selected":""}>Sí</option><option value="false" ${p.active===false?"selected":""}>No</option></select>
       </div>
     </div>
+    <div class="row">
+      <div class="field"><label>Tipo de agenda</label>
+        <select class="select" id="proGeneralist">
+          <option value="false" ${p.is_generalist?"":"selected"}>Especialista — sus citas NO se reasignan</option>
+          <option value="true" ${p.is_generalist?"selected":""}>Generalista — reasignable entre generalistas</option>
+        </select>
+      </div>
+      <div class="field"></div>
+    </div>
     <h4 style="margin:18px 0 8px;font-size:13px;color:var(--text-2);text-transform:uppercase;letter-spacing:0.5px">Horarios</h4>
     <div id="schedList"></div>
     <button class="btn" id="addSched" style="margin-top:8px">+ Añadir franja</button>
@@ -2066,6 +2092,7 @@ function openProfessionalModal(existing) {
         specialty: body.querySelector("#proSpec").value.trim(),
         color: body.querySelector("#proColor").value,
         active: body.querySelector("#proActive").value === "true",
+        is_generalist: body.querySelector("#proGeneralist").value === "true",
         schedules,
       };
       if (!payload.name || !payload.specialty) { toast("Faltan datos", "error"); return; }
