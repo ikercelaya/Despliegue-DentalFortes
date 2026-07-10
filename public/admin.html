@@ -6,6 +6,9 @@
   <title>Dental Fortes · CRM</title>
   <link rel="icon" type="image/png" href="/logo.png" />
   <link rel="alternate icon" type="image/svg+xml" href="/logo.svg" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
   <style>
     :root {
       --bg: #1a1a1a;
@@ -703,6 +706,51 @@
     .seg-add { display: flex; gap: 8px; margin-top: 10px; }
     .seg-add .input { flex: 1; }
     .mini-note { font-size: 11px; color: var(--text-3); }
+
+    /* =====================================================================
+       Premium v2 — realce visual del panel (aditivo, no cambia el layout)
+       ===================================================================== */
+    /* Tipografía profesional (Inter) con respaldo del sistema */
+    body {
+      font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      letter-spacing: 0.1px;
+    }
+    h2, h3, .kpi .val, .page-header h2 { letter-spacing: -0.3px; }
+
+    /* Tarjetas con un brillo superior tipo cristal (solo fondo, sin tocar el layout) */
+    .card {
+      background:
+        radial-gradient(135% 92% at 50% -25%, rgba(255,255,255,0.055), transparent 55%),
+        linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.022)),
+        rgba(22,22,22,0.94);
+    }
+
+    /* KPIs con más presencia */
+    .kpi .val { font-size: 42px; }
+    .kpi .lbl { font-size: 11.5px; letter-spacing: 0.7px; }
+
+    /* Tablas: más aire y hover elegante */
+    table td { padding: 14px 12px; }
+    table tr:hover td { background: rgba(255,255,255,0.05); }
+
+    /* Foco visible más limpio en toda la app */
+    .btn:focus-visible, .input:focus-visible, .select:focus-visible, .textarea:focus-visible {
+      outline: none; box-shadow: 0 0 0 3px rgba(255,255,255,0.14);
+    }
+
+    /* Estrellas de valoración (Reseñas) */
+    .stars { display: inline-flex; gap: 1px; font-size: 14px; vertical-align: middle; }
+    .stars .s { color: rgba(255,255,255,0.16); }
+    .stars .full { color: #f5c451; text-shadow: 0 0 10px rgba(245,196,81,0.30); }
+    .stars .half {
+      background: linear-gradient(90deg, #f5c451 50%, rgba(255,255,255,0.16) 50%);
+      -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+    }
+    .stars-num { margin-left: 7px; font-weight: 700; color: var(--text-2); font-variant-numeric: tabular-nums; vertical-align: middle; }
+
+    /* Estados de reseña (badges que faltaban) */
+    .badge-sent_to_google { background: rgba(96,165,250,0.16); color: #93c5fd; }
+    .badge-handled_internal { background: rgba(74,222,128,0.16); color: #86efac; }
   </style>
 </head>
 <body>
@@ -1586,6 +1634,20 @@ async function renderConversationDetail(id) {
 // ====================================================================
 // 5) RESEÑAS
 // ====================================================================
+const REVIEW_STATUS = { pending: "Pendiente", sent_to_google: "Enviada a Google", handled_internal: "Gestionada", closed: "Cerrada" };
+let reviewsCache = [];
+
+function starRow(rating) {
+  const r = Number(rating) || 0;
+  let s = '<span class="stars">';
+  for (let i = 1; i <= 5; i++) {
+    if (r >= i) s += '<span class="s full">★</span>';
+    else if (r >= i - 0.5) s += '<span class="s half">★</span>';
+    else s += '<span class="s">★</span>';
+  }
+  return s + `</span><span class="stars-num">${r}</span>`;
+}
+
 async function renderReviews() {
   $main.innerHTML = `
     <div class="page-header">
@@ -1598,31 +1660,66 @@ async function renderReviews() {
   `;
   try {
     const { reviews } = await api("/api/reviews");
+    reviewsCache = reviews;
     if (!reviews.length) {
       document.getElementById("reviewsCard").innerHTML = `<div class="empty-state">
         Sin reseñas registradas todavía.<br>
-        <small>Cuando el chatbot las pida a los pacientes tras la cita, aparecerán aquí. Las puntuaciones 4.5★+ van a Google, el resto se gestionan internamente.</small>
+        <small>Cuando el chatbot las pida a los pacientes tras la cita, aparecerán aquí. Las puntuaciones 4,5★+ van a Google, el resto se gestionan internamente.</small>
       </div>`;
       return;
     }
     document.getElementById("reviewsCard").innerHTML = `
       <table>
-        <thead><tr><th>Paciente</th><th>Valoración</th><th>Comentario</th><th>Ruta</th><th>Estado</th><th>Fecha</th></tr></thead>
+        <thead><tr><th>Paciente</th><th>Valoración</th><th>Comentario</th><th>Ruta</th><th>Estado</th><th>Fecha</th><th></th></tr></thead>
         <tbody>
-          ${reviews.map(r => `
+          ${reviews.map(r => {
+            const gestionable = r.routed_to === "internal" && r.status !== "handled_internal" && r.status !== "closed";
+            return `
             <tr>
-              <td>${escapeHtml(r.df_patients?.full_name || "Anónimo")}</td>
-              <td><strong>${r.rating}★</strong></td>
-              <td style="max-width:340px">${escapeHtml(r.comment || "—")}</td>
+              <td><strong>${escapeHtml(r.df_patients?.full_name || "Anónimo")}</strong></td>
+              <td>${starRow(r.rating)}</td>
+              <td style="max-width:340px">${escapeHtml(r.comment || "—")}${r.internal_resolution ? `<div class="mini-note" style="margin-top:4px">Resolución: ${escapeHtml(r.internal_resolution)}</div>` : ""}</td>
               <td>${r.routed_to === "google" ? "Google" : "Interno"}</td>
-              <td><span class="badge badge-${r.status === "handled_internal" ? "done" : "pending"}">${r.status}</span></td>
+              <td><span class="badge badge-${escapeHtml(r.status)}">${REVIEW_STATUS[r.status] || r.status}</span></td>
               <td>${fmtDateTime(r.created_at)}</td>
-            </tr>
-          `).join("")}
+              <td style="text-align:right">${gestionable ? `<button class="btn" onclick="openReviewManageModal('${r.id}')">Gestionar</button>` : ""}</td>
+            </tr>`;
+          }).join("")}
         </tbody>
       </table>
     `;
   } catch (err) { toast(err.message, "error"); }
+}
+
+// Gestión interna de una reseña negativa (Juan): anota la resolución y la marca como gestionada.
+function openReviewManageModal(id) {
+  const r = reviewsCache.find(x => x.id === id);
+  if (!r) return;
+  openModal(`
+    <h3>Gestionar reseña interna</h3>
+    <p style="color:var(--text-2);font-size:13px;margin:0 0 14px">
+      <strong>${escapeHtml(r.df_patients?.full_name || "Anónimo")}</strong> · ${starRow(r.rating)}<br>
+      <span style="color:var(--text-3)">${escapeHtml(r.comment || "Sin comentario")}</span>
+    </p>
+    <div class="row single"><div class="field">
+      <label>Cómo se ha resuelto (nota interna para el equipo)</label>
+      <textarea class="textarea" id="revRes" rows="4" placeholder="Ej.: Llamada a la paciente, se disculpa la espera y se le ofrece cita prioritaria.">${escapeHtml(r.internal_resolution || "")}</textarea>
+    </div></div>
+    <div class="actions">
+      <button class="btn" onclick="closeModal()">Cancelar</button>
+      <button class="btn primary" id="revSave">Marcar como gestionada</button>
+    </div>
+  `, { onMount: (body) => {
+    body.querySelector("#revSave").onclick = async () => {
+      try {
+        await api("/api/reviews/" + r.id, { method: "PATCH", body: {
+          status: "handled_internal",
+          internal_resolution: body.querySelector("#revRes").value.trim() || null,
+        }});
+        toast("Reseña gestionada", "success"); closeModal(); renderReviews();
+      } catch (err) { toast(err.message, "error"); }
+    };
+  }});
 }
 
 // ====================================================================
