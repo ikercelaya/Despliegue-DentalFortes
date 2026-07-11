@@ -11,6 +11,7 @@ const express = require("express");
 const { supabase } = require("./lib/db");
 const { issueToken, checkPassword, requireAuth } = require("./lib/auth");
 const { assignCabinet, CAPACITY_REASONS } = require("./lib/scheduling");
+const { ensurePaymentForAppointment } = require("./lib/billing");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -146,6 +147,107 @@ app.get("/api/dashboard/stats", requireAuth, async (_req, res) => {
   }
 });
 
+// Facturación del dashboard (con filtros: tratamiento, profesional, edad, periodo).
+app.get("/api/dashboard/billing", requireAuth, async (req, res) => {
+  try {
+    const { from, to, treatment_id, professional_id, age_min, age_max } = req.query;
+    const ageMin = age_min ? Number(age_min) : null;
+    const ageMax = age_max ? Number(age_max) : null;
+    const fromT = from ? Date.parse(from) : null;
+    const toT = to ? Date.parse(to) : null;
+
+    const [{ data: appts }, { data: pays }] = await Promise.all([
+      supabase.from("df_appointments")
+        .select("id, starts_at, status, treatment_id, professional_id, df_professionals(name), df_treatments(name), df_patients(birth_date)"),
+      supabase.from("df_patient_payments")
+        .select("amount_eur, paid, paid_at, created_at, appointment_id, df_patients(birth_date)"),
+    ]);
+    const apptMap = Object.fromEntries((appts || []).map((a) => [a.id, a]));
+
+    const now = new Date();
+    const ageOf = (bd) => {
+      if (!bd) return null;
+      const d = new Date(bd); if (isNaN(d.getTime())) return null;
+      let age = now.getFullYear() - d.getFullYear();
+      const m = now.getMonth() - d.getMonth();
+      if (m < 0 || (m === 0 && now.getDate() < d.getDate())) age--;
+      return age;
+    };
+    const filterAge = ageMin != null || ageMax != null;
+    const ageOk = (age) => (ageMin == null || (age != null && age >= ageMin)) && (ageMax == null || (age != null && age <= ageMax));
+    const round2 = (n) => Math.round((n + Number.EPSILON) * 100) / 100;
+    const monthKey = (s) => { const d = new Date(s); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0"); };
+
+    // Facturación (a partir de los cobros)
+    let totalFacturado = 0, totalPendiente = 0, numPagos = 0, numPendientes = 0;
+    const byTreatment = {}, byMonth = {}, byProfFacturado = {};
+    for (const p of pays || []) {
+      const a = p.appointment_id ? apptMap[p.appointment_id] : null;
+      const tId = a ? a.treatment_id : null;
+      const pId = a ? a.professional_id : null;
+      const tName = (a && a.df_treatments && a.df_treatments.name) || "Otros";
+      const pName = (a && a.df_professionals && a.df_professionals.name) || "Sin profesional";
+      const bd = (a && a.df_patients && a.df_patients.birth_date) || (p.df_patients && p.df_patients.birth_date) || null;
+      if (treatment_id && tId !== treatment_id) continue;
+      if (professional_id && pId !== professional_id) continue;
+      if (filterAge && !ageOk(ageOf(bd))) continue;
+      const refDate = p.paid ? (p.paid_at || p.created_at) : ((a && a.starts_at) || p.created_at);
+      const rt = Date.parse(refDate);
+      if (fromT && rt < fromT) continue;
+      if (toT && rt > toT) continue;
+      const amt = Number(p.amount_eur) || 0;
+      if (p.paid) {
+        totalFacturado += amt; numPagos++;
+        byTreatment[tName] = (byTreatment[tName] || 0) + amt;
+        const mk = monthKey(p.paid_at || p.created_at);
+        byMonth[mk] = (byMonth[mk] || 0) + amt;
+        byProfFacturado[pName] = (byProfFacturado[pName] || 0) + amt;
+      } else {
+        totalPendiente += amt; numPendientes++;
+      }
+    }
+
+    // Citas por profesional (para las métricas por profesional)
+    const byProfCitas = {};
+    for (const a of appts || []) {
+      if (a.status === "cancelled") continue;
+      const pName = (a.df_professionals && a.df_professionals.name) || "Sin profesional";
+      if (treatment_id && a.treatment_id !== treatment_id) continue;
+      if (professional_id && a.professional_id !== professional_id) continue;
+      if (filterAge && !ageOk(ageOf(a.df_patients && a.df_patients.birth_date))) continue;
+      const rt = Date.parse(a.starts_at);
+      if (fromT && rt < fromT) continue;
+      if (toT && rt > toT) continue;
+      byProfCitas[pName] = (byProfCitas[pName] || 0) + 1;
+    }
+
+    // Últimos 6 meses (relleno de meses vacíos)
+    const meses = [];
+    for (let i = 5; i >= 0; i--) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      meses.push({ key: d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0"), label: d.toLocaleDateString("es-ES", { month: "short" }) });
+    }
+    const byMonthArr = meses.map((m) => ({ month: m.key, label: m.label, amount: round2(byMonth[m.key] || 0) }));
+    const byTreatmentArr = Object.entries(byTreatment).map(([name, amount]) => ({ name, amount: round2(amount) })).sort((a, b) => b.amount - a.amount);
+    const profNames = new Set([...Object.keys(byProfCitas), ...Object.keys(byProfFacturado)]);
+    const byProfessional = [...profNames]
+      .map((name) => ({ name, citas: byProfCitas[name] || 0, facturado: round2(byProfFacturado[name] || 0) }))
+      .sort((a, b) => b.facturado - a.facturado || b.citas - a.citas);
+
+    return res.json({
+      totalFacturado: round2(totalFacturado),
+      totalPendiente: round2(totalPendiente),
+      numPagos, numPendientes,
+      byTreatment: byTreatmentArr,
+      byMonth: byMonthArr,
+      byProfessional,
+    });
+  } catch (err) {
+    console.error("[billing]", err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 // =============================================================
 // AGENDA / CITAS
 // =============================================================
@@ -212,6 +314,13 @@ app.post("/api/appointments", requireAuth, async (req, res) => {
       .select()
       .single();
     if (error) throw error;
+
+    // Cobro automático: si el tratamiento tiene precio, genera un cobro pendiente.
+    await ensurePaymentForAppointment(supabase, {
+      appointmentId: data.id, patientId: data.patient_id,
+      treatmentId: data.treatment_id, startsAt: data.starts_at,
+    }).catch((e) => console.error("[appointments/pago]", e.message));
+
     return res.json({ appointment: data });
   } catch (err) {
     console.error("[appointments/create]", err);
@@ -606,6 +715,27 @@ app.post("/api/patients/:id/payments", requireAuth, async (req, res) => {
   }
 });
 
+// Editar un cobro: marcar pagado/pendiente, cambiar importe, concepto o notas.
+app.patch("/api/patients/:id/payments/:pid", requireAuth, async (req, res) => {
+  try {
+    const body = req.body || {};
+    const patch = {};
+    if ("amount_eur" in body) patch.amount_eur = Number(body.amount_eur) || 0;
+    if ("concept" in body) patch.concept = body.concept || null;
+    if ("notes" in body) patch.notes = body.notes || null;
+    if ("paid" in body) {
+      patch.paid = !!body.paid;
+      patch.paid_at = patch.paid ? new Date().toISOString() : null;
+    }
+    const { data, error } = await supabase
+      .from("df_patient_payments").update(patch).eq("id", req.params.pid).select().single();
+    if (error) throw error;
+    return res.json({ payment: data });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 // =============================================================
 // PROFESIONALES
 // =============================================================
@@ -685,7 +815,7 @@ app.get("/api/treatments", requireAuth, async (_req, res) => {
 
 app.post("/api/treatments", requireAuth, async (req, res) => {
   try {
-    const { name, duration_minutes, description, is_first_visit } = req.body || {};
+    const { name, duration_minutes, description, is_first_visit, price_eur } = req.body || {};
     if (!name) return res.status(400).json({ error: "Falta nombre." });
     const { data, error } = await supabase
       .from("df_treatments").insert({
@@ -693,6 +823,7 @@ app.post("/api/treatments", requireAuth, async (req, res) => {
         duration_minutes: Number(duration_minutes) || 30,
         description: description || null,
         is_first_visit: !!is_first_visit,
+        price_eur: price_eur === "" || price_eur == null ? null : Number(price_eur),
       }).select().single();
     if (error) throw error;
     return res.json({ treatment: data });
@@ -703,9 +834,10 @@ app.post("/api/treatments", requireAuth, async (req, res) => {
 
 app.patch("/api/treatments/:id", requireAuth, async (req, res) => {
   try {
-    const allowed = ["name","duration_minutes","description","active","is_first_visit"];
+    const allowed = ["name","duration_minutes","description","active","is_first_visit","price_eur"];
     const patch = {};
     for (const k of allowed) if (k in (req.body || {})) patch[k] = req.body[k];
+    if ("price_eur" in patch) patch.price_eur = patch.price_eur === "" || patch.price_eur == null ? null : Number(patch.price_eur);
     const { data, error } = await supabase
       .from("df_treatments").update(patch).eq("id", req.params.id).select().single();
     if (error) throw error;

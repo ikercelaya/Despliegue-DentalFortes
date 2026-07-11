@@ -703,6 +703,67 @@
     .seg-add { display: flex; gap: 8px; margin-top: 10px; }
     .seg-add .input { flex: 1; }
     .mini-note { font-size: 11px; color: var(--text-3); }
+
+    /* ===================== Facturación / cobros ===================== */
+    .pay-row { display:flex; justify-content:space-between; align-items:center; gap:10px; padding:9px 0; border-bottom:1px solid var(--line); font-size:13px; }
+    .pay-info { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+    .pay-concept { color: var(--text); }
+    .pay-amt { font-weight:700; }
+    .pay-actions { display:flex; gap:6px; flex-shrink:0; }
+    .chip-btn { background: var(--bg-3); color: var(--text-2); border:1px solid var(--line-2); border-radius:999px; padding:4px 10px; font-size:12px; cursor:pointer; transition: all .18s var(--ease); }
+    .chip-btn:hover { background: var(--bg-4); color: var(--text); border-color: var(--ring-strong); transform: translateY(-1px); }
+    .chip-btn.ok { border-color: rgba(74,222,128,0.45); color:#8ef0b0; }
+    .chip-btn.ok:hover { background: rgba(74,222,128,0.14); }
+
+    /* ===================== Dashboard premium ===================== */
+    .grid-5 { display:grid; gap:16px; grid-template-columns: repeat(5, 1fr); }
+    @media (max-width: 1180px){ .grid-5 { grid-template-columns: repeat(2, 1fr);} }
+    @media (max-width: 560px){ .grid-5 { grid-template-columns: 1fr;} }
+    .kpi.accent-green .val { background: linear-gradient(135deg,#c8ffe0,#4ade80); -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent; }
+    .kpi.accent-amber .val { background: linear-gradient(135deg,#ffe9b8,#fbbf24); -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent; }
+    .kpi .sub { font-size:11px; color:var(--text-3); margin-top:2px; }
+
+    .dash-filters { display:flex; flex-wrap:wrap; gap:10px 14px; align-items:flex-end; }
+    .dash-filters .field { display:flex; flex-direction:column; gap:5px; }
+    .dash-filters label { font-size:11px; color:var(--text-3); text-transform:uppercase; letter-spacing:.5px; font-weight:600; }
+    .dash-filters .select, .dash-filters .input { min-width: 130px; }
+    .dash-filters .input.small { width: 78px; min-width:0; }
+
+    .fade-up { opacity:0; transform: translateY(10px); animation: fadeUp .5s var(--ease) forwards; }
+    .fade-up.d1 { animation-delay:.05s } .fade-up.d2 { animation-delay:.12s } .fade-up.d3 { animation-delay:.19s } .fade-up.d4 { animation-delay:.26s }
+    @keyframes fadeUp { to { opacity:1; transform:none; } }
+
+    /* Donut */
+    .donut-wrap { display:flex; gap:22px; align-items:center; flex-wrap:wrap; }
+    .donut { position:relative; width:180px; height:180px; flex-shrink:0; }
+    .donut svg { transform: rotate(-90deg); overflow:visible; }
+    .donut .seg { fill:none; stroke-width:20; stroke-linecap:butt; transition: stroke-dashoffset 1s var(--ease); }
+    .donut .center { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; text-align:center; }
+    .donut .center .big { font-size:22px; font-weight:700; background:var(--silver); -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent; }
+    .donut .center .lbl { font-size:10px; color:var(--text-3); text-transform:uppercase; letter-spacing:.5px; }
+    .legend { display:flex; flex-direction:column; gap:8px; flex:1; min-width:180px; }
+    .legend .li { display:flex; align-items:center; gap:8px; font-size:13px; }
+    .legend .dot { width:10px; height:10px; border-radius:3px; flex-shrink:0; }
+    .legend .li .nm { color:var(--text-2); flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .legend .li .vl { font-weight:600; }
+    .legend .li .pc { color:var(--text-3); font-size:11px; width:38px; text-align:right; }
+
+    /* Bar chart */
+    .bars { display:flex; align-items:flex-end; gap:12px; height:190px; padding-top:10px; }
+    .bars .col { flex:1; display:flex; flex-direction:column; align-items:center; gap:8px; height:100%; justify-content:flex-end; }
+    .bars .bar { width:70%; max-width:46px; border-radius:8px 8px 3px 3px; background:linear-gradient(180deg,#ededed,#9b9b9b); height:0; transition: height 1s var(--ease); box-shadow: inset 0 1px 0 rgba(255,255,255,.4), var(--shadow-sm); position:relative; }
+    .bars .bar:hover { filter: brightness(1.12); }
+    .bars .bval { font-size:11px; color:var(--text-2); font-weight:600; height:14px; }
+    .bars .blbl { font-size:11px; color:var(--text-3); text-transform:capitalize; }
+
+    /* Profesionales */
+    .prof-row { display:grid; grid-template-columns: 1.4fr auto 1fr; align-items:center; gap:12px; padding:10px 0; border-bottom:1px solid var(--line); }
+    .prof-row:last-child { border-bottom:none; }
+    .prof-name { font-weight:600; }
+    .prof-citas { font-size:12px; color:var(--text-3); }
+    .prof-bar-wrap { height:8px; background:var(--bg-3); border-radius:999px; overflow:hidden; }
+    .prof-bar { height:100%; width:0; border-radius:999px; background:linear-gradient(90deg,#d9d9d9,#8f8f8f); transition: width 1s var(--ease); }
+    .prof-fact { text-align:right; font-weight:600; font-size:13px; white-space:nowrap; }
   </style>
 </head>
 <body>
@@ -802,6 +863,7 @@ function authHeaders() { return token ? { Authorization: "Bearer " + token } : {
 function escapeHtml(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;" }[c])); }
 function fmtDate(s) { if (!s) return ""; return new Date(s).toLocaleDateString("es-ES", { day: "2-digit", month: "short", year: "numeric" }); }
 function fmtDateTime(s) { if (!s) return ""; return new Date(s).toLocaleString("es-ES", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }); }
+function fmtEur(n) { const v = Number(n) || 0; return v.toLocaleString("es-ES", { minimumFractionDigits: 0, maximumFractionDigits: 2 }) + " €"; }
 function fmtTime(s) { if (!s) return ""; return new Date(s).toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" }); }
 function fmtPhone(p) { if (!p) return ""; return String(p).replace(/^\+?34/, ""); }
 function toIsoLocal(date) {
@@ -912,39 +974,105 @@ document.getElementById("sbNav").addEventListener("click", (e) => {
 // ====================================================================
 // 1) DASHBOARD
 // ====================================================================
+const CHART_COLORS = ['#e0e0e0','#8ecae6','#a78bfa','#f5c451','#4ade80','#f87171','#5b6cff','#28a98c','#e07a5f','#ef476f','#118ab2','#f3a712'];
+let dashState = { period: '6m', treatment_id: '', professional_id: '', age_min: '', age_max: '' };
+
+function periodRange(period) {
+  const now = new Date();
+  if (period === 'month') return { from: new Date(now.getFullYear(), now.getMonth(), 1) };
+  if (period === '3m') return { from: new Date(now.getFullYear(), now.getMonth() - 3, now.getDate()) };
+  if (period === '6m') return { from: new Date(now.getFullYear(), now.getMonth() - 6, now.getDate()) };
+  if (period === 'year') return { from: new Date(now.getFullYear(), 0, 1) };
+  return {}; // 'all'
+}
+
 async function renderDashboard() {
   $main.innerHTML = `
     <div class="page-header">
       <h2>Dashboard</h2>
       <div class="actions"><button class="btn primary" id="newApptBtn">+ Nueva cita</button></div>
     </div>
-    <div class="grid grid-3" id="kpis">
-      <div class="card kpi"><div class="val">…</div><div class="lbl">Citas hoy</div></div>
-      <div class="card kpi"><div class="val">…</div><div class="lbl">Próximos 7 días</div></div>
-      <div class="card kpi"><div class="val">…</div><div class="lbl">Nuevos esta semana</div></div>
+    <div class="grid-5" id="kpis">
+      ${[['Citas hoy'],['Próximos 7 días'],['Nuevos esta semana'],['Facturación total'],['Facturación pendiente']]
+        .map((k,i)=>`<div class="card kpi fade-up d${(i%4)+1}"><div class="val">…</div><div class="lbl">${k[0]}</div></div>`).join("")}
     </div>
-    <div style="height:18px"></div>
+    <div style="height:16px"></div>
+    <div class="card fade-up d1">
+      <h3>Facturación</h3>
+      <div class="dash-filters" id="dashFilters">
+        <div class="field"><label>Periodo</label>
+          <select class="select" id="fPeriod">
+            <option value="month">Este mes</option>
+            <option value="3m">Últimos 3 meses</option>
+            <option value="6m" selected>Últimos 6 meses</option>
+            <option value="year">Este año</option>
+            <option value="all">Todo</option>
+          </select>
+        </div>
+        <div class="field"><label>Tratamiento</label>
+          <select class="select" id="fTreat"><option value="">Todos</option>
+            ${cache.treatments.map(t=>`<option value="${t.id}">${escapeHtml(t.name)}</option>`).join("")}
+          </select>
+        </div>
+        <div class="field"><label>Profesional</label>
+          <select class="select" id="fProf"><option value="">Todos</option>
+            ${cache.professionals.map(p=>`<option value="${p.id}">${escapeHtml(p.name)}</option>`).join("")}
+          </select>
+        </div>
+        <div class="field"><label>Edad</label>
+          <div style="display:flex;gap:6px;align-items:center">
+            <input class="input small" type="number" id="fAgeMin" placeholder="mín" min="0" />
+            <span style="color:var(--text-3)">–</span>
+            <input class="input small" type="number" id="fAgeMax" placeholder="máx" min="0" />
+          </div>
+        </div>
+      </div>
+    </div>
+    <div style="height:16px"></div>
+    <div class="grid grid-2">
+      <div class="card fade-up d2"><h3>Facturación por tratamiento</h3><div id="donutBox"><div class="empty-state">Cargando…</div></div></div>
+      <div class="card fade-up d3"><h3>Facturación · últimos 6 meses</h3><div id="barsBox"><div class="empty-state">Cargando…</div></div></div>
+    </div>
+    <div style="height:16px"></div>
+    <div class="card fade-up d4"><h3>Por profesional</h3><div id="profBox"><div class="empty-state">Cargando…</div></div></div>
+    <div style="height:16px"></div>
     <div class="card">
       <h3>Próximas citas</h3>
       <div id="upcoming"><div class="empty-state">Cargando…</div></div>
     </div>
   `;
   document.getElementById("newApptBtn").addEventListener("click", () => openAppointmentModal());
+
+  // Filtros → recargar facturación
+  const fp = document.getElementById("fPeriod");
+  const ft = document.getElementById("fTreat");
+  const fpr = document.getElementById("fProf");
+  const fmin = document.getElementById("fAgeMin");
+  const fmax = document.getElementById("fAgeMax");
+  fp.value = dashState.period; ft.value = dashState.treatment_id; fpr.value = dashState.professional_id;
+  fmin.value = dashState.age_min; fmax.value = dashState.age_max;
+  const onFilter = () => {
+    dashState = { period: fp.value, treatment_id: ft.value, professional_id: fpr.value, age_min: fmin.value, age_max: fmax.value };
+    loadDashboardBilling();
+  };
+  fp.onchange = ft.onchange = fpr.onchange = onFilter;
+  let ageTimer; const onAge = () => { clearTimeout(ageTimer); ageTimer = setTimeout(onFilter, 400); };
+  fmin.oninput = fmax.oninput = onAge;
+
   try {
     const stats = await api("/api/dashboard/stats");
-    document.getElementById("kpis").innerHTML = `
-      <div class="card kpi"><div class="val">${stats.citasHoy}</div><div class="lbl">Citas hoy</div></div>
-      <div class="card kpi"><div class="val">${stats.citasProximos7Dias}</div><div class="lbl">Próximos 7 días</div></div>
-      <div class="card kpi"><div class="val">${stats.pacientesNuevosEstaSemana}</div><div class="lbl">Nuevos esta semana</div></div>
-    `;
+    const cards = document.getElementById("kpis").children;
+    cards[0].querySelector(".val").textContent = stats.citasHoy;
+    cards[1].querySelector(".val").textContent = stats.citasProximos7Dias;
+    cards[2].querySelector(".val").textContent = stats.pacientesNuevosEstaSemana;
+
+    // Próximas citas
     const from = new Date(); from.setHours(0,0,0,0);
     const to = new Date(from); to.setDate(to.getDate() + 7);
     const { appointments } = await api(`/api/appointments?from=${from.toISOString()}&to=${to.toISOString()}`);
-    if (!appointments.length) {
-      document.getElementById("upcoming").innerHTML = `<div class="empty-state">Sin citas en los próximos 7 días.</div>`;
-    } else {
-      document.getElementById("upcoming").innerHTML = `
-        <table>
+    document.getElementById("upcoming").innerHTML = !appointments.length
+      ? `<div class="empty-state">Sin citas en los próximos 7 días.</div>`
+      : `<table>
           <thead><tr><th>Cuándo</th><th>Paciente</th><th>Profesional</th><th>Tratamiento</th><th>Estado</th></tr></thead>
           <tbody>
             ${appointments.slice(0,15).map(a => `
@@ -954,13 +1082,95 @@ async function renderDashboard() {
                 <td>${escapeHtml(a.df_professionals?.name || "—")}</td>
                 <td>${escapeHtml(a.df_treatments?.name || "—")}</td>
                 <td><span class="badge badge-${a.status}">${APPT_STATUS[a.status] || a.status}</span></td>
-              </tr>
-            `).join("")}
+              </tr>`).join("")}
           </tbody>
-        </table>
-      `;
-    }
+        </table>`;
   } catch (err) { toast(err.message, "error"); }
+
+  loadDashboardBilling();
+}
+
+async function loadDashboardBilling() {
+  const r = periodRange(dashState.period);
+  const qs = new URLSearchParams();
+  if (r.from) qs.set("from", r.from.toISOString());
+  if (dashState.treatment_id) qs.set("treatment_id", dashState.treatment_id);
+  if (dashState.professional_id) qs.set("professional_id", dashState.professional_id);
+  if (dashState.age_min !== "" && dashState.age_min != null) qs.set("age_min", dashState.age_min);
+  if (dashState.age_max !== "" && dashState.age_max != null) qs.set("age_max", dashState.age_max);
+  try {
+    const b = await api(`/api/dashboard/billing?${qs.toString()}`);
+    const kc = document.getElementById("kpis"); if (!kc) return;
+    const cards = kc.children;
+    cards[3].querySelector(".val").textContent = fmtEur(b.totalFacturado);
+    cards[3].classList.add("accent-green");
+    if (!cards[3].querySelector(".sub")) cards[3].insertAdjacentHTML("beforeend", `<div class="sub">${b.numPagos} cobro(s)</div>`);
+    else cards[3].querySelector(".sub").textContent = `${b.numPagos} cobro(s)`;
+    cards[4].querySelector(".val").textContent = fmtEur(b.totalPendiente);
+    cards[4].classList.add("accent-amber");
+    if (!cards[4].querySelector(".sub")) cards[4].insertAdjacentHTML("beforeend", `<div class="sub">${b.numPendientes} pendiente(s)</div>`);
+    else cards[4].querySelector(".sub").textContent = `${b.numPendientes} pendiente(s)`;
+
+    renderDonut(b.byTreatment, b.totalFacturado);
+    renderBars(b.byMonth);
+    renderProf(b.byProfessional);
+  } catch (err) { toast(err.message, "error"); }
+}
+
+function renderDonut(segments, total) {
+  const box = document.getElementById("donutBox"); if (!box) return;
+  const data = (segments || []).filter(s => s.amount > 0);
+  if (!data.length || !total) { box.innerHTML = `<div class="empty-state" style="padding:24px">Sin facturación cobrada en este periodo.</div>`; return; }
+  const R = 70, C = 2 * Math.PI * R;
+  let cum = 0;
+  const segs = data.map((s, i) => {
+    const frac = s.amount / total;
+    const arc = frac * C;
+    const rot = cum * 360;
+    cum += frac;
+    return `<circle class="seg" cx="90" cy="90" r="${R}" stroke="${CHART_COLORS[i % CHART_COLORS.length]}"
+      stroke-dasharray="${arc.toFixed(2)} ${C.toFixed(2)}" stroke-dashoffset="${arc.toFixed(2)}"
+      transform="rotate(${rot.toFixed(2)} 90 90)" data-off="${arc.toFixed(2)}"></circle>`;
+  }).join("");
+  const legend = data.map((s, i) => {
+    const pc = Math.round((s.amount / total) * 100);
+    return `<div class="li"><span class="dot" style="background:${CHART_COLORS[i % CHART_COLORS.length]}"></span>
+      <span class="nm">${escapeHtml(s.name)}</span><span class="vl">${fmtEur(s.amount)}</span><span class="pc">${pc}%</span></div>`;
+  }).join("");
+  box.innerHTML = `<div class="donut-wrap">
+      <div class="donut"><svg viewBox="0 0 180 180" width="180" height="180">${segs}</svg>
+        <div class="center"><div class="big">${fmtEur(total)}</div><div class="lbl">Total</div></div>
+      </div>
+      <div class="legend">${legend}</div>
+    </div>`;
+  requestAnimationFrame(() => box.querySelectorAll(".seg").forEach(el => { el.style.strokeDashoffset = "0"; }));
+}
+
+function renderBars(months) {
+  const box = document.getElementById("barsBox"); if (!box) return;
+  const data = months || [];
+  const max = Math.max(1, ...data.map(m => m.amount));
+  box.innerHTML = `<div class="bars">
+    ${data.map(m => `<div class="col">
+      <div class="bval">${m.amount ? fmtEur(m.amount) : ""}</div>
+      <div class="bar" data-h="${Math.max(m.amount > 0 ? 6 : 0, Math.round((m.amount / max) * 100))}"></div>
+      <div class="blbl">${escapeHtml(m.label)}</div>
+    </div>`).join("")}
+  </div>`;
+  requestAnimationFrame(() => box.querySelectorAll(".bar").forEach(el => { el.style.height = el.dataset.h + "%"; }));
+}
+
+function renderProf(rows) {
+  const box = document.getElementById("profBox"); if (!box) return;
+  const data = rows || [];
+  if (!data.length) { box.innerHTML = `<div class="empty-state" style="padding:20px">Sin datos por profesional en este periodo.</div>`; return; }
+  const max = Math.max(1, ...data.map(p => p.facturado));
+  box.innerHTML = data.map((p, i) => `<div class="prof-row">
+      <div><div class="prof-name">${escapeHtml(p.name)}</div><div class="prof-citas">${p.citas} cita(s)</div></div>
+      <div class="prof-bar-wrap" style="width:120px"><div class="prof-bar" data-w="${Math.round((p.facturado / max) * 100)}" style="background:linear-gradient(90deg, ${CHART_COLORS[i % CHART_COLORS.length]}, #8f8f8f)"></div></div>
+      <div class="prof-fact">${fmtEur(p.facturado)}</div>
+    </div>`).join("");
+  requestAnimationFrame(() => box.querySelectorAll(".prof-bar").forEach(el => { el.style.width = el.dataset.w + "%"; }));
 }
 
 // ====================================================================
@@ -1273,9 +1483,15 @@ async function renderPatientDetail(id) {
 
     // Cobros
     document.getElementById("patientPays").innerHTML = data.payments.length
-      ? data.payments.slice(0,10).map(pay => `<div style="padding:6px 0;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;font-size:13px">
-          <span>${escapeHtml(pay.concept || "—")}</span>
-          <span><strong>${pay.amount_eur} €</strong> ${pay.paid?'<span class="badge badge-done">Pagado</span>':'<span class="badge badge-pending">Pendiente</span>'}</span>
+      ? data.payments.slice(0,20).map(pay => `<div class="pay-row">
+          <div class="pay-info"><span class="pay-concept">${escapeHtml(pay.concept || "—")}</span>
+            <span class="pay-amt">${fmtEur(pay.amount_eur)}</span>
+            ${pay.paid?'<span class="badge badge-done">Pagado</span>':'<span class="badge badge-pending">Pendiente</span>'}
+          </div>
+          <div class="pay-actions">
+            <button class="chip-btn" title="Editar importe" onclick="editPayment('${id}','${pay.id}', ${Number(pay.amount_eur)||0}, ${JSON.stringify(escapeHtml(pay.concept||"")).replace(/"/g,'&quot;')})">✎</button>
+            <button class="chip-btn ${pay.paid?'':'ok'}" onclick="setPaymentPaid('${id}','${pay.id}', ${pay.paid?'false':'true'})">${pay.paid?'Marcar pendiente':'Marcar pagado'}</button>
+          </div>
         </div>`).join("")
       : `<div class="empty-state" style="padding:14px">Sin cobros registrados.</div>`;
     document.getElementById("addPayment").onclick = () => openPaymentModal(id);
@@ -1299,6 +1515,26 @@ async function renderPatientDetail(id) {
 window.togglePending = async function(pid, pendingId, done) {
   try { await api(`/api/patients/${pid}/pending/${pendingId}`, { method: "PATCH", body: { done } }); }
   catch (err) { toast(err.message, "error"); }
+};
+
+window.setPaymentPaid = async function(patientId, payId, paid) {
+  try {
+    await api(`/api/patients/${patientId}/payments/${payId}`, { method: "PATCH", body: { paid } });
+    toast(paid ? "Marcado como pagado" : "Marcado como pendiente", "success");
+    renderPatientDetail(patientId);
+  } catch (err) { toast(err.message, "error"); }
+};
+
+window.editPayment = async function(patientId, payId, amount, concept) {
+  const val = prompt("Importe del cobro (€):", amount);
+  if (val === null) return;
+  const n = Number(String(val).replace(",", "."));
+  if (isNaN(n) || n < 0) { toast("Importe no válido", "error"); return; }
+  try {
+    await api(`/api/patients/${patientId}/payments/${payId}`, { method: "PATCH", body: { amount_eur: n } });
+    toast("Importe actualizado", "success");
+    renderPatientDetail(patientId);
+  } catch (err) { toast(err.message, "error"); }
 };
 
 function openPaymentModal(patientId) {
@@ -2122,12 +2358,13 @@ async function renderTreatments() {
     cache.treatments = treatments;
     document.getElementById("trtCard").innerHTML = `
       <table>
-        <thead><tr><th>Nombre</th><th>Duración</th><th>Primera visita</th><th>Activo</th><th></th></tr></thead>
+        <thead><tr><th>Nombre</th><th>Duración</th><th>Precio</th><th>Primera visita</th><th>Activo</th><th></th></tr></thead>
         <tbody>
           ${treatments.map(t => `
             <tr>
               <td><strong>${escapeHtml(t.name)}</strong>${t.description?`<div style="color:var(--text-3);font-size:12px">${escapeHtml(t.description)}</div>`:""}</td>
               <td>${t.duration_minutes} min</td>
+              <td>${t.price_eur != null ? fmtEur(t.price_eur) : '<span style="color:var(--text-3)">—</span>'}</td>
               <td>${t.is_first_visit ? "Sí" : "No"}</td>
               <td>${t.active ? "Sí" : "No"}</td>
               <td>
@@ -2156,6 +2393,10 @@ function openTreatmentModal(existing) {
       <div class="field"><label>Nombre</label><input class="input" id="trtName" value="${escapeHtml(t.name||"")}" /></div>
       <div class="field"><label>Duración (min)</label><input class="input" type="number" id="trtDur" value="${t.duration_minutes||30}" /></div>
     </div>
+    <div class="row">
+      <div class="field"><label>Precio (€)</label><input class="input" type="number" step="0.01" min="0" id="trtPrice" value="${t.price_eur != null ? t.price_eur : ""}" placeholder="Sin precio" /></div>
+      <div class="field"><label style="opacity:.7">Genera un cobro pendiente al reservar</label><div style="padding:9px 0;color:var(--text-3);font-size:12px">Déjalo vacío para no cobrar por esta cita.</div></div>
+    </div>
     <div class="row single"><div class="field"><label>Descripción</label><textarea class="textarea" id="trtDesc" rows="2">${escapeHtml(t.description||"")}</textarea></div></div>
     <div class="row">
       <div class="field"><label>Primera visita</label>
@@ -2171,10 +2412,12 @@ function openTreatmentModal(existing) {
     </div>
   `, { onMount: (body) => {
     body.querySelector("#saveTrt").onclick = async () => {
+      const priceRaw = body.querySelector("#trtPrice").value.trim();
       const payload = {
         name: body.querySelector("#trtName").value.trim(),
         duration_minutes: Number(body.querySelector("#trtDur").value) || 30,
         description: body.querySelector("#trtDesc").value.trim() || null,
+        price_eur: priceRaw === "" ? null : Number(priceRaw),
         is_first_visit: body.querySelector("#trtFirst").value === "true",
         active: body.querySelector("#trtActive").value === "true",
       };

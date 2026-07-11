@@ -50,6 +50,7 @@ create table if not exists public.df_treatments (
   name text not null,
   duration_minutes int not null default 30,
   description text,
+  price_eur numeric(10,2),                       -- precio de referencia (genera cobro al reservar)
   active boolean not null default true,
   is_first_visit boolean not null default false,
   created_at timestamptz not null default now(),

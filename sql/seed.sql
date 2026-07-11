@@ -96,16 +96,17 @@ update public.df_professionals set is_generalist = true
   where specialty ilike '%general%' or name ilike '%irene%' or name ilike '%mishel%';
 
 -- Catálogo mínimo de tratamientos (placeholder, el cliente lo completará)
-insert into public.df_treatments (name, duration_minutes, is_first_visit) values
-  ('Primera visita', 30, true),
-  ('Revisión', 20, false),
-  ('Limpieza / higiene', 45, false),
-  ('Empaste', 30, false),
-  ('Endodoncia', 60, false),
-  ('Ortodoncia (revisión)', 20, false),
-  ('Periodoncia', 45, false),
-  ('Prótesis (toma de medidas)', 45, false),
-  ('Odontopediatría', 30, false);
+-- price_eur: precios de EJEMPLO; el cliente los ajusta en el apartado Tratamientos.
+insert into public.df_treatments (name, duration_minutes, is_first_visit, price_eur) values
+  ('Primera visita', 30, true, 0),
+  ('Revisión', 20, false, 30),
+  ('Limpieza / higiene', 45, false, 55),
+  ('Empaste', 30, false, 60),
+  ('Endodoncia', 60, false, 180),
+  ('Ortodoncia (revisión)', 20, false, 45),
+  ('Periodoncia', 45, false, 90),
+  ('Prótesis (toma de medidas)', 45, false, 120),
+  ('Odontopediatría', 30, false, 40);
 
 select count(*) as profesionales from public.df_professionals;
 select count(*) as tratamientos from public.df_treatments;
