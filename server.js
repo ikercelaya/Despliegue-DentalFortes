@@ -207,9 +207,13 @@ app.get("/api/dashboard/billing", requireAuth, async (req, res) => {
       }
     }
 
-    // Citas por profesional (para las métricas por profesional)
+    // Citas por profesional (para las métricas por profesional).
+    // Se cuenta cada cita UNA sola vez (dedupe defensivo por id).
     const byProfCitas = {};
+    const vistas = new Set();
     for (const a of appts || []) {
+      if (!a || vistas.has(a.id)) continue;
+      vistas.add(a.id);
       if (a.status === "cancelled") continue;
       const pName = (a.df_professionals && a.df_professionals.name) || "Sin profesional";
       if (treatment_id && a.treatment_id !== treatment_id) continue;

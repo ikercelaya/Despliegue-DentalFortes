@@ -1019,7 +1019,7 @@ async function renderDashboard() {
             ${cache.professionals.map(p=>`<option value="${p.id}">${escapeHtml(p.name)}</option>`).join("")}
           </select>
         </div>
-        <div class="field"><label>Edad</label>
+        <div class="field"><label>Edad cliente</label>
           <div style="display:flex;gap:6px;align-items:center">
             <input class="input small" type="number" id="fAgeMin" placeholder="mín" min="0" />
             <span style="color:var(--text-3)">–</span>
