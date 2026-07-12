@@ -18,6 +18,11 @@ const PORT = process.env.PORT || 3000;
 const PUBLIC_URL = (process.env.PUBLIC_URL || `http://localhost:${PORT}`).replace(/\/$/, "");
 const META_GRAPH_VERSION = process.env.META_GRAPH_VERSION || "v21.0";
 const META_GRAPH_BASE = `https://graph.facebook.com/${META_GRAPH_VERSION}`;
+const GOOGLE_CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.events";
+const GOOGLE_OAUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
+const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
+const GOOGLE_CALENDAR_BASE = "https://www.googleapis.com/calendar/v3";
+const GOOGLE_REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI || `${PUBLIC_URL}/api/google/calendar/callback`;
 
 function normalizeMetaTemplateName(value) {
   return String(value || "")
@@ -67,6 +72,314 @@ function addTextExamples(component, exampleValues, key) {
   } else {
     component.example = { [key]: [exampleValues[vars[0] - 1]] };
   }
+}
+
+function googleConfig() {
+  return {
+    clientId: process.env.GOOGLE_CLIENT_ID || "",
+    clientSecret: process.env.GOOGLE_CLIENT_SECRET || "",
+    redirectUri: GOOGLE_REDIRECT_URI,
+  };
+}
+
+function requireGoogleConfig() {
+  const cfg = googleConfig();
+  if (!cfg.clientId || !cfg.clientSecret) {
+    const err = new Error("Faltan GOOGLE_CLIENT_ID y/o GOOGLE_CLIENT_SECRET en las variables de entorno.");
+    err.status = 503;
+    throw err;
+  }
+  return cfg;
+}
+
+function googleStateSecret() {
+  return process.env.GOOGLE_STATE_SECRET || process.env.SESSION_SECRET || process.env.ADMIN_PASSWORD_HASH || "df-google-state-dev";
+}
+
+function googleTokenKey() {
+  const secret = process.env.GOOGLE_TOKEN_SECRET || process.env.SESSION_SECRET || process.env.ADMIN_PASSWORD_HASH || "df-google-token-dev";
+  return crypto.createHash("sha256").update(secret).digest();
+}
+
+function signGoogleState(payload) {
+  const body = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  const sig = crypto.createHmac("sha256", googleStateSecret()).update(body).digest("base64url");
+  return `${body}.${sig}`;
+}
+
+function verifyGoogleState(state) {
+  const [body, sig] = String(state || "").split(".");
+  if (!body || !sig) throw new Error("State OAuth no valido.");
+  const expected = crypto.createHmac("sha256", googleStateSecret()).update(body).digest("base64url");
+  const a = Buffer.from(sig);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) throw new Error("State OAuth no valido.");
+  const payload = JSON.parse(Buffer.from(body, "base64url").toString("utf8"));
+  if (!payload.professional_id || !payload.exp || Date.now() > payload.exp) throw new Error("State OAuth caducado.");
+  return payload;
+}
+
+function encryptGoogleToken(value) {
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", googleTokenKey(), iv);
+  const encrypted = Buffer.concat([cipher.update(String(value), "utf8"), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return `v1:${iv.toString("base64url")}:${tag.toString("base64url")}:${encrypted.toString("base64url")}`;
+}
+
+function decryptGoogleToken(value) {
+  const [version, ivRaw, tagRaw, encryptedRaw] = String(value || "").split(":");
+  if (version !== "v1" || !ivRaw || !tagRaw || !encryptedRaw) throw new Error("Token de Google no valido.");
+  const decipher = crypto.createDecipheriv("aes-256-gcm", googleTokenKey(), Buffer.from(ivRaw, "base64url"));
+  decipher.setAuthTag(Buffer.from(tagRaw, "base64url"));
+  return Buffer.concat([
+    decipher.update(Buffer.from(encryptedRaw, "base64url")),
+    decipher.final(),
+  ]).toString("utf8");
+}
+
+function adminRedirectWithGoogleStatus(status, message, professionalId) {
+  const params = new URLSearchParams({ google_calendar: status });
+  if (message) params.set("google_calendar_message", message);
+  if (professionalId) params.set("professional_id", professionalId);
+  return `${PUBLIC_URL}/admin?${params.toString()}#agenda`;
+}
+
+async function exchangeGoogleCode(code) {
+  const cfg = requireGoogleConfig();
+  const body = new URLSearchParams({
+    code,
+    client_id: cfg.clientId,
+    client_secret: cfg.clientSecret,
+    redirect_uri: cfg.redirectUri,
+    grant_type: "authorization_code",
+  });
+  const r = await fetch(GOOGLE_TOKEN_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body,
+  });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.error_description || data.error || "Google no devolvio tokens.");
+  return data;
+}
+
+async function refreshGoogleAccessToken(encryptedRefreshToken) {
+  const cfg = requireGoogleConfig();
+  const refreshToken = decryptGoogleToken(encryptedRefreshToken);
+  const body = new URLSearchParams({
+    client_id: cfg.clientId,
+    client_secret: cfg.clientSecret,
+    refresh_token: refreshToken,
+    grant_type: "refresh_token",
+  });
+  const r = await fetch(GOOGLE_TOKEN_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body,
+  });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok || !data.access_token) throw new Error(data.error_description || data.error || "No se pudo renovar el acceso a Google.");
+  return data.access_token;
+}
+
+async function googleCalendarRequest(professional, method, pathPart, body) {
+  if (!professional?.google_calendar_refresh_token || !professional.google_calendar_sync_enabled) {
+    throw new Error("El profesional no tiene Google Calendar sincronizado.");
+  }
+  const accessToken = await refreshGoogleAccessToken(professional.google_calendar_refresh_token);
+  const r = await fetch(`${GOOGLE_CALENDAR_BASE}${pathPart}`, {
+    method,
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const text = await r.text();
+  let data = {};
+  if (text) {
+    try { data = JSON.parse(text); } catch (_e) { data = { error: text }; }
+  }
+  if (!r.ok) {
+    const err = new Error(data.error?.message || data.error_description || data.error || `Google Calendar error ${r.status}`);
+    err.status = r.status;
+    throw err;
+  }
+  return data;
+}
+
+async function getGoogleProfessional(professionalId) {
+  if (!professionalId) return null;
+  const { data, error } = await supabase
+    .from("df_professionals")
+    .select("id, name, google_calendar_id, google_calendar_refresh_token, google_calendar_sync_enabled")
+    .eq("id", professionalId)
+    .maybeSingle();
+  if (error) throw error;
+  return data;
+}
+
+async function deleteGoogleEventForProfessional(professionalId, eventId) {
+  if (!professionalId || !eventId) return;
+  const professional = await getGoogleProfessional(professionalId);
+  if (!professional?.google_calendar_refresh_token) return;
+  const calendarId = encodeURIComponent(professional.google_calendar_id || "primary");
+  const googleEventId = encodeURIComponent(eventId);
+  try {
+    await googleCalendarRequest(professional, "DELETE", `/calendars/${calendarId}/events/${googleEventId}`);
+  } catch (err) {
+    if (![404, 410].includes(err.status)) throw err;
+  }
+}
+
+function buildGoogleEvent(appointment) {
+  const patientName = appointment.df_patients?.full_name || "Paciente";
+  const treatmentName = appointment.df_treatments?.name || "Cita";
+  const professionalName = appointment.df_professionals?.name || "Dental Fortes";
+  const lines = [
+    `Paciente: ${patientName}`,
+    `Tratamiento: ${treatmentName}`,
+    `Profesional CRM: ${professionalName}`,
+    "",
+    "Evento sincronizado automaticamente desde Dental Fortes CRM.",
+  ];
+  return {
+    summary: `Dental Fortes - ${patientName}`,
+    description: lines.join("\n"),
+    start: { dateTime: appointment.starts_at, timeZone: "Europe/Madrid" },
+    end: { dateTime: appointment.ends_at, timeZone: "Europe/Madrid" },
+    reminders: { useDefault: true },
+    extendedProperties: { private: { dental_fortes_appointment_id: appointment.id } },
+  };
+}
+
+async function loadAppointmentForGoogle(id) {
+  const { data, error } = await supabase
+    .from("df_appointments")
+    .select("id, patient_id, professional_id, treatment_id, starts_at, ends_at, status, google_event_id, df_patients(full_name), df_professionals(id, name, google_calendar_id, google_calendar_refresh_token, google_calendar_sync_enabled), df_treatments(name)")
+    .eq("id", id)
+    .maybeSingle();
+  if (error) throw error;
+  return data;
+}
+
+async function syncAppointmentToGoogle(appointmentId, previous = null) {
+  const appointment = await loadAppointmentForGoogle(appointmentId);
+  if (!appointment) return { action: "missing" };
+
+  if (previous?.professional_id && previous.professional_id !== appointment.professional_id && previous.google_event_id) {
+    await deleteGoogleEventForProfessional(previous.professional_id, previous.google_event_id);
+    appointment.google_event_id = null;
+    await supabase.from("df_appointments").update({
+      google_event_id: null,
+      google_synced_at: null,
+    }).eq("id", appointment.id);
+  }
+
+  const shouldSync = appointment.status === "confirmed" &&
+    appointment.professional_id &&
+    appointment.df_professionals?.google_calendar_refresh_token &&
+    appointment.df_professionals?.google_calendar_sync_enabled;
+
+  if (!shouldSync) {
+    const shouldRemoveEvent = ["pending", "cancelled"].includes(appointment.status);
+    if (appointment.google_event_id && appointment.professional_id) {
+      if (shouldRemoveEvent) {
+        await deleteGoogleEventForProfessional(appointment.professional_id, appointment.google_event_id);
+        await supabase.from("df_appointments").update({
+          google_event_id: null,
+          google_synced_at: null,
+          google_sync_error: null,
+        }).eq("id", appointment.id);
+        return { action: "deleted" };
+      }
+      return { action: "kept" };
+    }
+    return { action: "skipped" };
+  }
+
+  const professional = appointment.df_professionals;
+  const calendarId = encodeURIComponent(professional.google_calendar_id || "primary");
+  const body = buildGoogleEvent(appointment);
+  let googleEvent;
+
+  try {
+    if (appointment.google_event_id) {
+      googleEvent = await googleCalendarRequest(
+        professional,
+        "PATCH",
+        `/calendars/${calendarId}/events/${encodeURIComponent(appointment.google_event_id)}?sendUpdates=none`,
+        body
+      );
+    } else {
+      googleEvent = await googleCalendarRequest(
+        professional,
+        "POST",
+        `/calendars/${calendarId}/events?sendUpdates=none`,
+        body
+      );
+    }
+  } catch (err) {
+    if (appointment.google_event_id && [404, 410].includes(err.status)) {
+      googleEvent = await googleCalendarRequest(
+        professional,
+        "POST",
+        `/calendars/${calendarId}/events?sendUpdates=none`,
+        body
+      );
+    } else {
+      await supabase.from("df_appointments").update({ google_sync_error: err.message }).eq("id", appointment.id);
+      await supabase.from("df_professionals").update({ google_calendar_sync_error: err.message }).eq("id", professional.id);
+      throw err;
+    }
+  }
+
+  await supabase.from("df_appointments").update({
+    google_event_id: googleEvent.id || appointment.google_event_id,
+    google_synced_at: new Date().toISOString(),
+    google_sync_error: null,
+  }).eq("id", appointment.id);
+  await supabase.from("df_professionals").update({
+    google_calendar_last_sync_at: new Date().toISOString(),
+    google_calendar_sync_error: null,
+  }).eq("id", professional.id);
+  return { action: appointment.google_event_id ? "updated" : "created", google_event_id: googleEvent.id };
+}
+
+async function syncProfessionalGoogleCalendar(professionalId) {
+  const professional = await getGoogleProfessional(professionalId);
+  if (!professional) throw new Error("Profesional no encontrado.");
+  if (!professional.google_calendar_refresh_token || !professional.google_calendar_sync_enabled) {
+    throw new Error("Este profesional aun no ha vinculado Google Calendar.");
+  }
+  const from = new Date();
+  from.setDate(from.getDate() - 1);
+  const { data, error } = await supabase
+    .from("df_appointments")
+    .select("id")
+    .eq("professional_id", professionalId)
+    .gte("starts_at", from.toISOString())
+    .order("starts_at", { ascending: true })
+    .limit(500);
+  if (error) throw error;
+
+  const result = { synced: 0, skipped: 0, deleted: 0, errors: [] };
+  for (const row of data || []) {
+    try {
+      const item = await syncAppointmentToGoogle(row.id);
+      if (item.action === "created" || item.action === "updated") result.synced++;
+      else if (item.action === "deleted") result.deleted++;
+      else result.skipped++;
+    } catch (err) {
+      result.errors.push({ id: row.id, error: err.message });
+    }
+  }
+  await supabase.from("df_professionals").update({
+    google_calendar_last_sync_at: new Date().toISOString(),
+    google_calendar_sync_error: result.errors[0]?.error || null,
+  }).eq("id", professionalId);
+  return result;
 }
 
 app.use(express.json({ limit: "8mb", verify: (req, _res, buf) => { req.rawBody = buf; } }));
@@ -324,6 +637,9 @@ app.post("/api/appointments", requireAuth, async (req, res) => {
       appointmentId: data.id, patientId: data.patient_id,
       treatmentId: data.treatment_id, startsAt: data.starts_at,
     }).catch((e) => console.error("[appointments/pago]", e.message));
+    if (data.status === "confirmed") {
+      await syncAppointmentToGoogle(data.id).catch((e) => console.error("[google-calendar/create]", e.message));
+    }
 
     return res.json({ appointment: data });
   } catch (err) {
@@ -338,13 +654,20 @@ app.patch("/api/appointments/:id", requireAuth, async (req, res) => {
     const allowed = ["patient_id","professional_id","treatment_id","cabinet","starts_at","ends_at","status","is_first_visit","is_urgent","notes"];
     const patch = {};
     for (const k of allowed) if (k in body) patch[k] = body[k];
+    const { data: before, error: beforeError } = await supabase
+      .from("df_appointments")
+      .select("*")
+      .eq("id", req.params.id)
+      .maybeSingle();
+    if (beforeError) throw beforeError;
+    if (!before) return res.status(404).json({ error: "Cita no encontrada." });
 
     // Revalida capacidad SOLO si el tramo/profesional/tipo/gabinete cambia de verdad
     // (el panel reenvía esos campos aunque no los toques; comparándolos con el valor
     // actual evitamos 409 espurios al editar solo notas/estado, p. ej. al confirmar).
     const touchesScheduleKeys = ["starts_at","ends_at","professional_id","is_first_visit","cabinet"].some((k) => k in patch);
     if (touchesScheduleKeys && !body.force) {
-      const { data: cur } = await supabase.from("df_appointments").select("*").eq("id", req.params.id).maybeSingle();
+      const cur = before;
       if (cur) {
         const sameTime = (a, b) => { const x = Date.parse(a), y = Date.parse(b); return !isNaN(x) && !isNaN(y) && x === y; };
         const changed =
@@ -379,6 +702,7 @@ app.patch("/api/appointments/:id", requireAuth, async (req, res) => {
       .select()
       .single();
     if (error) throw error;
+    await syncAppointmentToGoogle(data.id, before).catch((e) => console.error("[google-calendar/update]", e.message));
     return res.json({ appointment: data });
   } catch (err) {
     console.error("[appointments/update]", err);
@@ -388,8 +712,17 @@ app.patch("/api/appointments/:id", requireAuth, async (req, res) => {
 
 app.delete("/api/appointments/:id", requireAuth, async (req, res) => {
   try {
+    const { data: before } = await supabase
+      .from("df_appointments")
+      .select("id, professional_id, google_event_id")
+      .eq("id", req.params.id)
+      .maybeSingle();
     const { error } = await supabase.from("df_appointments").delete().eq("id", req.params.id);
     if (error) throw error;
+    if (before?.google_event_id) {
+      await deleteGoogleEventForProfessional(before.professional_id, before.google_event_id)
+        .catch((e) => console.error("[google-calendar/delete]", e.message));
+    }
     return res.json({ ok: true });
   } catch (err) {
     return res.status(500).json({ error: err.message });
@@ -403,6 +736,114 @@ app.delete("/api/appointments/:id", requireAuth, async (req, res) => {
 // cadencia de recordatorios y, si está activado, autocancela las no confirmadas
 // para liberar el hueco.
 // =============================================================
+// =============================================================
+// GOOGLE CALENDAR - OAuth por profesional
+// =============================================================
+app.post("/api/professionals/:id/google/connect-url", requireAuth, async (req, res) => {
+  try {
+    const cfg = requireGoogleConfig();
+    const { data: professional, error } = await supabase
+      .from("df_professionals")
+      .select("id, name")
+      .eq("id", req.params.id)
+      .maybeSingle();
+    if (error) throw error;
+    if (!professional) return res.status(404).json({ error: "Profesional no encontrado." });
+
+    const state = signGoogleState({
+      professional_id: professional.id,
+      iat: Date.now(),
+      exp: Date.now() + 10 * 60 * 1000,
+      nonce: crypto.randomBytes(12).toString("base64url"),
+    });
+    const params = new URLSearchParams({
+      client_id: cfg.clientId,
+      redirect_uri: cfg.redirectUri,
+      response_type: "code",
+      scope: GOOGLE_CALENDAR_SCOPE,
+      access_type: "offline",
+      prompt: "consent",
+      include_granted_scopes: "true",
+      state,
+    });
+    return res.json({ url: `${GOOGLE_OAUTH_URL}?${params.toString()}` });
+  } catch (err) {
+    console.error("[google-calendar/connect-url]", err);
+    return res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+app.get("/api/google/calendar/callback", async (req, res) => {
+  try {
+    if (req.query.error) {
+      return res.redirect(302, adminRedirectWithGoogleStatus("error", String(req.query.error_description || req.query.error)));
+    }
+    const code = String(req.query.code || "");
+    if (!code) throw new Error("Google no ha devuelto codigo OAuth.");
+    const state = verifyGoogleState(req.query.state);
+    const tokens = await exchangeGoogleCode(code);
+    if (!tokens.refresh_token) {
+      throw new Error("Google no ha devuelto refresh_token. Vuelve a conectar y acepta de nuevo los permisos.");
+    }
+    const { error } = await supabase
+      .from("df_professionals")
+      .update({
+        google_calendar_id: "primary",
+        google_calendar_refresh_token: encryptGoogleToken(tokens.refresh_token),
+        google_calendar_sync_enabled: true,
+        google_calendar_connected_at: new Date().toISOString(),
+        google_calendar_sync_error: null,
+      })
+      .eq("id", state.professional_id);
+    if (error) throw error;
+    await syncProfessionalGoogleCalendar(state.professional_id).catch((e) => console.error("[google-calendar/initial-sync]", e.message));
+    return res.redirect(302, adminRedirectWithGoogleStatus("connected", "", state.professional_id));
+  } catch (err) {
+    console.error("[google-calendar/callback]", err);
+    return res.redirect(302, adminRedirectWithGoogleStatus("error", err.message));
+  }
+});
+
+app.post("/api/professionals/:id/google/sync", requireAuth, async (req, res) => {
+  try {
+    const result = await syncProfessionalGoogleCalendar(req.params.id);
+    return res.json({ ok: result.errors.length === 0, ...result });
+  } catch (err) {
+    console.error("[google-calendar/sync]", err);
+    return res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+app.post("/api/professionals/:id/google/disconnect", requireAuth, async (req, res) => {
+  try {
+    const { data: appointments } = await supabase
+      .from("df_appointments")
+      .select("id, google_event_id")
+      .eq("professional_id", req.params.id)
+      .not("google_event_id", "is", null);
+    for (const appt of appointments || []) {
+      await deleteGoogleEventForProfessional(req.params.id, appt.google_event_id).catch(() => {});
+    }
+    await supabase.from("df_appointments").update({
+      google_event_id: null,
+      google_synced_at: null,
+      google_sync_error: null,
+    }).eq("professional_id", req.params.id);
+    const { error } = await supabase.from("df_professionals").update({
+      google_calendar_refresh_token: null,
+      google_calendar_sync_enabled: false,
+      google_calendar_connected_at: null,
+      google_calendar_last_sync_at: null,
+      google_calendar_sync_error: null,
+    }).eq("id", req.params.id);
+    if (error) throw error;
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("[google-calendar/disconnect]", err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 const CONFIRM_SECRET = process.env.CONFIRM_SECRET || process.env.SESSION_SECRET || process.env.ADMIN_PASSWORD || "df-confirm-secret";
 const AUTO_CANCEL_HOURS = Number(process.env.AUTO_CANCEL_HOURS || 2);
 const AUTO_CANCEL_ENABLED = /^(1|true|si|sí|on)$/i.test(String(process.env.AUTO_CANCEL_ENABLED || ""));
@@ -446,8 +887,10 @@ app.get("/api/appointments/:id/confirm", async (req, res) => {
     if (appt.status === "confirmed") {
       return res.status(200).send(confirmPage("Su cita ya estaba confirmada. ¡Le esperamos!"));
     }
-    await supabase.from("df_appointments")
+    const { error: updateError } = await supabase.from("df_appointments")
       .update({ status: "confirmed", confirmed_at: new Date().toISOString() }).eq("id", id);
+    if (updateError) throw updateError;
+    await syncAppointmentToGoogle(id).catch((e) => console.error("[google-calendar/confirm]", e.message));
     return res.status(200).send(confirmPage("¡Gracias! Su cita ha quedado confirmada."));
   } catch (err) {
     console.error("[confirm]", err);
@@ -747,7 +1190,7 @@ app.get("/api/professionals", requireAuth, async (_req, res) => {
   try {
     const { data, error } = await supabase
       .from("df_professionals")
-      .select("*, df_professional_schedules(*)")
+      .select("id, name, specialty, color, active, is_generalist, notes, created_at, updated_at, google_calendar_id, google_calendar_email, google_calendar_sync_enabled, google_calendar_connected_at, google_calendar_last_sync_at, google_calendar_sync_error, df_professional_schedules(*)")
       .order("name", { ascending: true });
     if (error) throw error;
     return res.json({ professionals: data });

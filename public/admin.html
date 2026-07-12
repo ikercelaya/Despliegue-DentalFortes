@@ -149,6 +149,7 @@ a:hover { text-decoration: underline; }
   transition: transform .16s var(--ease), background .16s var(--ease), border-color .16s var(--ease), filter .16s;
 }
 .btn:hover { background: #F3F5FA; border-color: var(--ring-strong); transform: translateY(-1px); }
+.btn:disabled { opacity: .68; cursor: wait; transform: none; }
 .btn.primary { background: var(--silver); color: #fff; border-color: transparent; box-shadow: 0 8px 18px rgba(85,122,198,.3); }
 .btn.primary:hover { filter: brightness(1.07); }
 .btn.danger { color: var(--danger); border-color: #F3D2D8; background: #fff; }
@@ -487,6 +488,24 @@ async function api(path, opts = {}) {
   return data;
 }
 
+async function refreshProfessionalsCache() {
+  const { professionals } = await api("/api/professionals");
+  cache.professionals = professionals || [];
+  return cache.professionals;
+}
+
+function handleGoogleCalendarOAuthResult() {
+  const params = new URLSearchParams(location.search || "");
+  const status = params.get("google_calendar");
+  if (!status) return;
+  const professionalId = params.get("professional_id");
+  if (professionalId) agendaState.professionalId = professionalId;
+  const message = params.get("google_calendar_message");
+  if (status === "connected") toast("Google Calendar vinculado correctamente", "success");
+  else toast(message || "No se pudo vincular Google Calendar", "error");
+  history.replaceState(null, "", location.pathname + location.hash);
+}
+
 // ---------------- Modal ----------------
 function openModal(html, opts = {}) {
   $modalRoot.innerHTML = `<div class="modal-bg"><div class="modal" id="modalBody">${html}</div></div>`;
@@ -520,12 +539,13 @@ async function showApp() {
   $appScreen.style.display = "grid";
   // Precargar profesionales y tratamientos (se usan en muchos sitios)
   try {
-    const [{ professionals }, { treatments }] = await Promise.all([
-      api("/api/professionals"), api("/api/treatments")
+    const [professionals, { treatments }] = await Promise.all([
+      refreshProfessionalsCache(), api("/api/treatments")
     ]);
     cache.professionals = professionals || [];
     cache.treatments = treatments || [];
   } catch (_e) {}
+  handleGoogleCalendarOAuthResult();
   route(location.hash.replace(/^#/, "") || "dashboard");
 }
 
@@ -781,10 +801,43 @@ function startOfWeek(d) {
   return date;
 }
 
+async function handleGoogleCalendarSync(professional) {
+  if (!professional?.id) return;
+  const btn = document.getElementById("googleSyncBtn");
+  const originalText = btn ? btn.textContent : "";
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = professional.google_calendar_sync_enabled ? "Sincronizando..." : "Abriendo Google...";
+  }
+  try {
+    if (professional.google_calendar_sync_enabled) {
+      const result = await api(`/api/professionals/${professional.id}/google/sync`, { method: "POST" });
+      await refreshProfessionalsCache();
+      toast(`Google Calendar actualizado (${result.synced || 0} cita(s))`, result.ok ? "success" : "error");
+      renderAgenda();
+      return;
+    }
+    const { url } = await api(`/api/professionals/${professional.id}/google/connect-url`, { method: "POST" });
+    window.location.href = url;
+  } catch (err) {
+    toast(err.message, "error");
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = originalText;
+    }
+  }
+}
+
 async function renderAgenda() {
   if (!agendaState.weekStart) agendaState.weekStart = startOfWeek(new Date());
   const ws = agendaState.weekStart;
   const we = new Date(ws); we.setDate(we.getDate() + 5); // L-V
+  const selectedProfessional = cache.professionals.find(p => p.id === agendaState.professionalId) || null;
+  const googleSyncButton = selectedProfessional ? `
+    <button class="btn primary" id="googleSyncBtn" title="${selectedProfessional.google_calendar_sync_enabled ? "Volver a sincronizar citas confirmadas" : "Vincular este profesional con su Google Calendar"}">
+      ${selectedProfessional.google_calendar_sync_enabled ? "Sincronizado correctamente" : "Sincronizar con Google"}
+    </button>
+  ` : "";
   $main.innerHTML = `
     <div class="page-header">
       <h2>Agenda</h2>
@@ -803,6 +856,7 @@ async function renderAgenda() {
         <option value="">Todos los profesionales</option>
         ${cache.professionals.map(p => `<option value="${p.id}" ${agendaState.professionalId===p.id?"selected":""}>${escapeHtml(p.name)}</option>`).join("")}
       </select>
+      ${googleSyncButton}
     </div>
     <div id="agendaContainer"><div class="empty-state">Cargando agenda…</div></div>
   `;
@@ -811,6 +865,10 @@ async function renderAgenda() {
   document.getElementById("thisWeek").onclick = () => { agendaState.weekStart = startOfWeek(new Date()); renderAgenda(); };
   document.getElementById("newApptBtn").onclick = () => openAppointmentModal();
   document.getElementById("proFilter").onchange = (e) => { agendaState.professionalId = e.target.value; renderAgenda(); };
+  const googleSyncBtn = document.getElementById("googleSyncBtn");
+  if (googleSyncBtn && selectedProfessional) {
+    googleSyncBtn.onclick = () => handleGoogleCalendarSync(selectedProfessional);
+  }
 
   try {
     const from = new Date(ws); const to = new Date(ws); to.setDate(to.getDate() + 5); to.setHours(23,59,59);

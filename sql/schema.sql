@@ -17,6 +17,13 @@ create table if not exists public.df_professionals (
   active boolean not null default true,
   is_generalist boolean not null default false, -- true = odontología general (citas reasignables entre generalistas)
   notes text,
+  google_calendar_id text default 'primary',
+  google_calendar_email text,
+  google_calendar_refresh_token text,
+  google_calendar_sync_enabled boolean not null default false,
+  google_calendar_connected_at timestamptz,
+  google_calendar_last_sync_at timestamptz,
+  google_calendar_sync_error text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -140,6 +147,9 @@ create table if not exists public.df_appointments (
   reminder_1d_at timestamptz,                      -- recordatorio a 1 día enviado
   reminder_6h_at timestamptz,                      -- recordatorio a 6 horas enviado
   auto_cancelled boolean not null default false,   -- cancelada automáticamente por no confirmar
+  google_event_id text,                            -- evento creado en Google Calendar del profesional
+  google_synced_at timestamptz,
+  google_sync_error text,
   source text not null default 'manual' check (source in ('manual','bot_web','bot_whatsapp','form')),
   notes text,
   created_at timestamptz not null default now(),
@@ -150,6 +160,7 @@ create index if not exists df_appointments_when_idx on public.df_appointments (s
 create index if not exists df_appointments_pro_idx on public.df_appointments (professional_id, starts_at);
 create index if not exists df_appointments_patient_idx on public.df_appointments (patient_id, starts_at desc);
 create index if not exists df_appointments_status_idx on public.df_appointments (status);
+create index if not exists df_appointments_google_event_idx on public.df_appointments (google_event_id);
 
 -- -----------------------------
 -- 5) Conversaciones (placeholder para el chatbot que se integra después)
