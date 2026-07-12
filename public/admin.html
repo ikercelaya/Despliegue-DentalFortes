@@ -131,6 +131,11 @@ a:hover { text-decoration: underline; }
 .nav-divider { padding: 16px 13px 8px; font-size: 11px; color: #808799; text-transform: uppercase; letter-spacing: .7px; font-weight: 700; }
 .sb-bottom { padding: 16px 18px; border-top: 1px solid rgba(255,255,255,0.08); font-size: 12px; color: #808799;
   display: flex; align-items: center; gap: 8px; }
+.sb-user { display: inline-flex; align-items: center; gap: 8px; min-width: 0; color: #fff; font-weight: 700; }
+.sb-user-avatar { width: 28px; height: 28px; border-radius: 50%; background: #fff; color: #111827;
+  display: inline-flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 800;
+  box-shadow: 0 6px 14px rgba(0,0,0,.18); flex-shrink: 0; }
+.sb-user-name { color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sb-bottom button { background: transparent; color: #CACEDA; border: 1px solid rgba(255,255,255,0.18);
   border-radius: 8px; padding: 6px 12px; font-size: 12px; font-weight: 600; cursor: pointer; }
 .sb-bottom button:hover { background: rgba(255,255,255,0.08); color: #fff; }
@@ -428,7 +433,10 @@ table td, .agenda-grid .hour { font-variant-numeric: tabular-nums; }
       </div>
     </nav>
     <div class="sb-bottom">
-      <span>Recepci&oacute;n</span>
+      <div class="sb-user" aria-label="Usuario actual: Recepci&oacute;n">
+        <span class="sb-user-avatar">R</span>
+        <span class="sb-user-name">Recepci&oacute;n</span>
+      </div>
       <button id="logoutBtn" style="margin-left:auto">Salir</button>
     </div>
   </aside>
@@ -1640,7 +1648,7 @@ async function renderReviews() {
 // ====================================================================
 async function renderMarketing() {
   $main.innerHTML = `
-    <div class="page-header" style="justify-content:flex-start;align-items:center">
+    <div class="page-header">
       <h2>Marketing y campañas</h2>
       <div class="actions">
         <button class="btn primary" id="newCampaignBtn">+ Nueva campaña</button>
