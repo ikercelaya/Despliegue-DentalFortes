@@ -304,6 +304,11 @@ table td, .agenda-grid .hour { font-variant-numeric: tabular-nums; }
 .badge-sent_to_google { background:#EAF0FB; color:#557AC6; }
 .badge-handled_internal { background:#E6F6F0; color:#2FB08C; }
 .badge-internal { background:#FBF1E0; color:#C8871F; }
+.reviews-table th, .reviews-table td { vertical-align: middle; }
+.reviews-table .comment-cell { max-width: 360px; white-space: normal; }
+.reviews-table .reviewed-cell { text-align: center; width: 104px; }
+.reviews-table .actions-cell { text-align: right; width: 132px; }
+.review-notes-preview { margin-top: 4px; color: var(--text-3); font-size: 11px; }
 
 /* Dashboard */
 .grid-5 { display:grid; gap:16px; grid-template-columns:repeat(5,1fr); }
@@ -423,7 +428,7 @@ table td, .agenda-grid .hour { font-variant-numeric: tabular-nums; }
       </div>
     </nav>
     <div class="sb-bottom">
-      <span>v1.0.0</span>
+      <span>Recepci&oacute;n</span>
       <button id="logoutBtn" style="margin-left:auto">Salir</button>
     </div>
   </aside>
@@ -457,6 +462,7 @@ let cache = { professionals: [], treatments: [] };
 // ---------------- Helpers ----------------
 function authHeaders() { return token ? { Authorization: "Bearer " + token } : {}; }
 function escapeHtml(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;" }[c])); }
+function encodeActionPayload(value) { return encodeURIComponent(JSON.stringify(value)).replace(/'/g, "%27"); }
 function fmtDate(s) { if (!s) return ""; return new Date(s).toLocaleDateString("es-ES", { day: "2-digit", month: "short", year: "numeric" }); }
 function fmtDateTime(s) { if (!s) return ""; return new Date(s).toLocaleString("es-ES", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }); }
 function fmtEur(n) { const v = Number(n) || 0; return v.toLocaleString("es-ES", { minimumFractionDigits: 0, maximumFractionDigits: 2 }) + " €"; }
@@ -1380,7 +1386,6 @@ async function renderConversations() {
   $main.innerHTML = `
     <div class="page-header">
       <h2>Conversaciones</h2>
-      <div class="actions"><span class="badge badge-pending">Pendiente del chatbot · Fase 2</span></div>
     </div>
     <div class="card" id="convCard"><div class="empty-state">Cargando…</div></div>
   `;
@@ -1503,6 +1508,74 @@ function starRow(rating){
   return out + '</span>';
 }
 
+function reviewStatusLabel(status) {
+  return {
+    pending: "Pendiente",
+    sent_to_google: "Enviada a Google",
+    handled_internal: "Gestionada",
+    closed: "Cerrada",
+  }[status] || status || "Pendiente";
+}
+
+async function setReviewReviewed(id, checked) {
+  try {
+    await api(`/api/reviews/${id}`, { method: "PATCH", body: { reviewed: checked } });
+    toast(checked ? "Rese\u00f1a marcada como revisada" : "Rese\u00f1a marcada como pendiente", "success");
+  } catch (err) {
+    toast(err.message, "error");
+    renderReviews();
+  }
+}
+
+function openReviewManagement(json) {
+  const review = typeof json === "string" ? JSON.parse(json) : json;
+  openModal(`
+    <h3>Gestionar rese&ntilde;a</h3>
+    <div class="row">
+      <div class="field"><label>Paciente</label><input class="input" value="${escapeHtml(review.df_patients?.full_name || "An\u00f3nimo")}" disabled /></div>
+      <div class="field"><label>Valoraci&oacute;n</label><input class="input" value="${escapeHtml(String(review.rating || ""))} / 5" disabled /></div>
+    </div>
+    <div class="row single"><div class="field"><label>Comentario del paciente</label>
+      <textarea class="textarea" rows="3" disabled>${escapeHtml(review.comment || "")}</textarea>
+    </div></div>
+    <div class="row">
+      <div class="field"><label>Estado</label>
+        <select class="select" id="reviewStatus">
+          <option value="pending" ${review.status === "pending" ? "selected" : ""}>Pendiente</option>
+          <option value="sent_to_google" ${review.status === "sent_to_google" ? "selected" : ""}>Enviada a Google</option>
+          <option value="handled_internal" ${review.status === "handled_internal" ? "selected" : ""}>Gestionada internamente</option>
+          <option value="closed" ${review.status === "closed" ? "selected" : ""}>Cerrada</option>
+        </select>
+      </div>
+      <div class="field"><label>Revisado</label>
+        <label class="chk-row" style="min-height:39px"><input type="checkbox" id="reviewReviewed" ${review.reviewed ? "checked" : ""}> Revisado por recepci&oacute;n</label>
+      </div>
+    </div>
+    <div class="row single"><div class="field"><label>Notas de gesti&oacute;n</label>
+      <textarea class="textarea" id="reviewNotes" rows="5" placeholder="Ej.: Se ha llamado al paciente, se ha ofrecido nueva cita, se deja pendiente de seguimiento...">${escapeHtml(review.internal_resolution || "")}</textarea>
+    </div></div>
+    <div class="actions">
+      <button class="btn" onclick="closeModal()">Cancelar</button>
+      <button class="btn primary" id="saveReviewManagement">Guardar</button>
+    </div>
+  `, { onMount: (body) => {
+    body.querySelector("#saveReviewManagement").onclick = async () => {
+      try {
+        await api(`/api/reviews/${review.id}`, { method: "PATCH", body: {
+          status: body.querySelector("#reviewStatus").value,
+          reviewed: body.querySelector("#reviewReviewed").checked,
+          internal_resolution: body.querySelector("#reviewNotes").value.trim() || null,
+        }});
+        toast("Rese\u00f1a actualizada", "success");
+        closeModal();
+        renderReviews();
+      } catch (err) { toast(err.message, "error"); }
+    };
+  }});
+}
+window.openReviewManagement = openReviewManagement;
+window.setReviewReviewed = setReviewReviewed;
+
 async function renderReviews() {
   $main.innerHTML = `
     <div class="page-header">
@@ -1523,17 +1596,37 @@ async function renderReviews() {
       return;
     }
     document.getElementById("reviewsCard").innerHTML = `
-      <table>
-        <thead><tr><th>Paciente</th><th>Valoración</th><th>Comentario</th><th>Ruta</th><th>Estado</th><th>Fecha</th></tr></thead>
+      <table class="reviews-table">
+        <thead>
+          <tr>
+            <th style="width:14%">Paciente</th>
+            <th style="width:12%">Valoración</th>
+            <th>Comentario</th>
+            <th class="reviewed-cell">Revisado</th>
+            <th style="width:10%">Ruta</th>
+            <th style="width:13%">Estado</th>
+            <th style="width:12%">Fecha</th>
+            <th class="actions-cell"></th>
+          </tr>
+        </thead>
         <tbody>
           ${reviews.map(r => `
             <tr>
               <td>${escapeHtml(r.df_patients?.full_name || "Anónimo")}</td>
               <td>${starRow(r.rating)}</td>
-              <td style="max-width:340px">${escapeHtml(r.comment || "—")}</td>
+              <td class="comment-cell">
+                ${escapeHtml(r.comment || "—")}
+                ${r.internal_resolution ? `<div class="review-notes-preview">Notas: ${escapeHtml(r.internal_resolution)}</div>` : ""}
+              </td>
+              <td class="reviewed-cell">
+                <input type="checkbox" ${r.reviewed ? "checked" : ""} onchange="setReviewReviewed('${r.id}', this.checked)" />
+              </td>
               <td>${r.routed_to === "google" ? "Google" : "Interno"}</td>
-              <td><span class="badge badge-${r.status === "handled_internal" ? "done" : "pending"}">${r.status}</span></td>
+              <td><span class="badge badge-${r.status === "sent_to_google" ? "sent_to_google" : (r.status === "handled_internal" || r.status === "closed" ? "done" : "pending")}">${escapeHtml(reviewStatusLabel(r.status))}</span></td>
               <td>${fmtDateTime(r.created_at)}</td>
+              <td class="actions-cell">
+                <button class="btn primary" onclick="openReviewManagement(decodeURIComponent('${encodeActionPayload(r)}'))">Gestionar</button>
+              </td>
             </tr>
           `).join("")}
         </tbody>
@@ -1547,19 +1640,17 @@ async function renderReviews() {
 // ====================================================================
 async function renderMarketing() {
   $main.innerHTML = `
-    <div class="page-header">
+    <div class="page-header" style="justify-content:flex-start;align-items:center">
       <h2>Marketing y campañas</h2>
       <div class="actions">
         <button class="btn primary" id="newCampaignBtn">+ Nueva campaña</button>
         <button class="btn" id="newTemplateBtn">Crear plantilla</button>
-        <button class="btn" id="diagBtn" title="Comprueba la conexión con Meta (WhatsApp)">Diagnóstico</button>
       </div>
     </div>
     <div class="card" id="campaignsCard"><div class="empty-state">Cargando…</div></div>
   `;
   document.getElementById("newCampaignBtn").onclick = () => openCampaignModal();
   document.getElementById("newTemplateBtn").onclick = () => openMetaTemplateModal();
-  document.getElementById("diagBtn").onclick = () => openDiagnoseModal();
   try {
     const { campaigns } = await api("/api/campaigns");
     if (!campaigns.length) {

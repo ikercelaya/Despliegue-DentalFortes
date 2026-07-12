@@ -1421,7 +1421,7 @@ app.post("/api/reviews", requireAuth, async (req, res) => {
 
 app.patch("/api/reviews/:id", requireAuth, async (req, res) => {
   try {
-    const allowed = ["status","internal_resolution"];
+    const allowed = ["status","internal_resolution","reviewed"];
     const patch = {};
     for (const k of allowed) if (k in (req.body || {})) patch[k] = req.body[k];
     const { data, error } = await supabase
