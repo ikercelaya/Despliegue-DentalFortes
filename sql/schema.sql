@@ -258,6 +258,25 @@ values ('reminder_cadence', '{"offsets":[72,24,6]}'::jsonb)
 on conflict (key) do nothing;
 
 -- -----------------------------
+-- 7c) Urgencias pendientes (las registra el bot; recepción las gestiona)
+-- -----------------------------
+create table if not exists public.df_urgencies (
+  id uuid primary key default gen_random_uuid(),
+  conversation_id uuid references public.df_conversations(id) on delete set null,
+  patient_id uuid references public.df_patients(id) on delete set null,
+  customer_name text,
+  customer_phone text,
+  summary text,
+  pain_level smallint,
+  onset text,
+  status text not null default 'pending' check (status in ('pending','scheduled','closed')),
+  appointment_id uuid references public.df_appointments(id) on delete set null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+create index if not exists df_urgencies_status_idx on public.df_urgencies (status, created_at desc);
+
+-- -----------------------------
 -- 8) Triggers de updated_at
 -- -----------------------------
 create or replace function public.df_set_updated_at()
@@ -314,6 +333,7 @@ alter table public.df_reviews enable row level security;
 alter table public.df_campaigns enable row level security;
 alter table public.df_campaign_recipients enable row level security;
 alter table public.df_settings enable row level security;
+alter table public.df_urgencies enable row level security;
 
 -- Recarga el cache de PostgREST
 notify pgrst, 'reload schema';

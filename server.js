@@ -1087,6 +1087,41 @@ app.post("/api/appointments/:id/send-reminder", requireAuth, async (req, res) =>
 });
 
 // =============================================================
+// URGENCIAS PENDIENTES (las registra el bot; recepción las gestiona)
+// =============================================================
+app.get("/api/urgencies", requireAuth, async (req, res) => {
+  try {
+    const status = req.query.status || "pending";
+    const { data, error } = await supabase
+      .from("df_urgencies")
+      .select("*, df_patients(id, full_name, phone)")
+      .eq("status", status)
+      .order("created_at", { ascending: false })
+      .limit(200);
+    if (error) throw error;
+    return res.json({ urgencies: data || [] });
+  } catch (err) {
+    console.error("[urgencies/list]", err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+app.patch("/api/urgencies/:id", requireAuth, async (req, res) => {
+  try {
+    const allowed = ["status", "appointment_id", "summary", "customer_name", "customer_phone", "patient_id"];
+    const patch = {};
+    for (const k of allowed) if (k in (req.body || {})) patch[k] = req.body[k];
+    patch.updated_at = new Date().toISOString();
+    const { data, error } = await supabase
+      .from("df_urgencies").update(patch).eq("id", req.params.id).select().single();
+    if (error) throw error;
+    return res.json({ urgency: data });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// =============================================================
 // PACIENTES
 // =============================================================
 app.get("/api/patients", requireAuth, async (req, res) => {

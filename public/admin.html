@@ -981,6 +981,56 @@ async function handleGoogleCalendarSync(professional) {
   }
 }
 
+// ---- Urgencias pendientes (bajo el calendario) ----
+async function loadUrgencias() {
+  const box = document.getElementById("urgenciasBox");
+  if (!box) return;
+  try {
+    const { urgencies } = await api("/api/urgencies?status=pending");
+    window._urgCache = urgencies || [];
+    if (!urgencies.length) {
+      box.innerHTML = `<h3>Urgencias pendientes</h3><div class="empty-state" style="padding:18px">No hay urgencias pendientes.</div>`;
+      return;
+    }
+    box.innerHTML = `
+      <h3>Urgencias pendientes</h3>
+      <table>
+        <thead><tr><th>Paciente</th><th>Descripción</th><th>Dolor</th><th>Recibida</th><th></th></tr></thead>
+        <tbody>
+          ${urgencies.map(u => {
+            const nombre = (u.df_patients && u.df_patients.full_name) || u.customer_name || "Anónimo";
+            const tel = u.customer_phone || (u.df_patients && u.df_patients.phone) || "";
+            const desc = [u.summary, u.onset ? "desde " + u.onset : ""].filter(Boolean).join(" · ") || "—";
+            const dolor = u.pain_level ? `${u.pain_level}/10` : "—";
+            return `<tr>
+              <td><strong>${escapeHtml(nombre)}</strong>${tel ? `<div style="color:var(--text-3);font-size:12px">${escapeHtml(fmtPhone(tel))}</div>` : ""}</td>
+              <td style="max-width:380px">${escapeHtml(desc)}</td>
+              <td>${dolor}</td>
+              <td>${fmtDateTime(u.created_at)}</td>
+              <td><button class="btn primary" onclick="agendarUrgencia('${u.id}')">Agendar cita</button></td>
+            </tr>`;
+          }).join("")}
+        </tbody>
+      </table>
+    `;
+  } catch (err) {
+    box.innerHTML = `<h3>Urgencias pendientes</h3><div class="empty-state" style="padding:18px">No se pudieron cargar las urgencias.</div>`;
+  }
+}
+window.agendarUrgencia = function(id) {
+  const u = (window._urgCache || []).find(x => x.id === id);
+  if (!u) return;
+  const nombre = (u.df_patients && u.df_patients.full_name) || u.customer_name || "";
+  const notas = "Urgencia" + (u.summary ? ": " + u.summary : "") +
+    (u.pain_level ? ` · dolor ${u.pain_level}/10` : "") + (u.onset ? ` · desde ${u.onset}` : "");
+  openAppointmentModal(null, {
+    urgencyId: u.id,
+    patientId: u.patient_id || (u.df_patients && u.df_patients.id) || "",
+    patientName: nombre,
+    notes: notas,
+  });
+};
+
 async function renderAgenda() {
   if (!agendaState.weekStart) agendaState.weekStart = startOfWeek(new Date());
   const ws = agendaState.weekStart;
@@ -1012,7 +1062,10 @@ async function renderAgenda() {
       ${googleSyncButton}
     </div>
     <div id="agendaContainer"><div class="empty-state">Cargando agenda…</div></div>
+    <div style="height:18px"></div>
+    <div class="card" id="urgenciasBox"><div class="empty-state">Cargando urgencias…</div></div>
   `;
+  loadUrgencias();
   document.getElementById("prevWeek").onclick = () => { agendaState.weekStart = new Date(ws.getTime() - 7*86400000); renderAgenda(); };
   document.getElementById("nextWeek").onclick = () => { agendaState.weekStart = new Date(ws.getTime() + 7*86400000); renderAgenda(); };
   document.getElementById("thisWeek").onclick = () => { agendaState.weekStart = startOfWeek(new Date()); renderAgenda(); };
@@ -1380,7 +1433,8 @@ function openPaymentModal(patientId) {
 // ====================================================================
 // CITA (modal con buscador de paciente)
 // ====================================================================
-async function openAppointmentModal(id) {
+async function openAppointmentModal(id, prefill) {
+  const pf = prefill || {};
   let existing = null;
   if (id) {
     try {
@@ -1396,8 +1450,8 @@ async function openAppointmentModal(id) {
     <h3>${existing ? "Editar cita" : "Nueva cita"}</h3>
     <div class="row single">
       <div class="field"><label>Paciente (busca por nombre o teléfono)</label>
-        <input class="input" id="patientPicker" placeholder="Empezar a escribir…" value="${escapeHtml(existing?.df_patients?.full_name || "")}" />
-        <input type="hidden" id="patientId" value="${existing?.patient_id||""}" />
+        <input class="input" id="patientPicker" placeholder="Empezar a escribir…" value="${escapeHtml(existing?.df_patients?.full_name || pf.patientName || "")}" />
+        <input type="hidden" id="patientId" value="${existing?.patient_id || pf.patientId || ""}" />
         <div id="patientSuggest" style="background:var(--bg-2);border:1px solid var(--line);border-radius:6px;margin-top:4px;max-height:150px;overflow-y:auto;display:none"></div>
       </div>
     </div>
@@ -1428,7 +1482,7 @@ async function openAppointmentModal(id) {
       <div class="field"><label>Marcadores</label>
         <div style="display:flex;gap:14px;padding:9px 0">
           <label style="font-size:13px;color:var(--text-2)"><input type="checkbox" id="apFirst" ${existing?.is_first_visit?"checked":""} /> Primera visita</label>
-          <label style="font-size:13px;color:var(--text-2)"><input type="checkbox" id="apUrg" ${existing?.is_urgent?"checked":""} /> Urgencia</label>
+          <label style="font-size:13px;color:var(--text-2)"><input type="checkbox" id="apUrg" ${(existing?.is_urgent || pf.urgencyId)?"checked":""} /> Urgencia</label>
         </div>
       </div>
     </div>
@@ -1447,7 +1501,7 @@ async function openAppointmentModal(id) {
         </label>
       </div>
     </div>
-    <div class="row single"><div class="field"><label>Notas</label><textarea class="textarea" id="apNotes" rows="2">${escapeHtml(existing?.notes||"")}</textarea></div></div>
+    <div class="row single"><div class="field"><label>Notas</label><textarea class="textarea" id="apNotes" rows="2">${escapeHtml(existing?.notes || pf.notes || "")}</textarea></div></div>
     <div class="actions">
       ${existing ? `<button class="btn danger" id="delAppt" style="margin-right:auto">Eliminar</button>` : ""}
       <button class="btn" onclick="closeModal()">Cancelar</button>
@@ -1508,8 +1562,12 @@ async function openAppointmentModal(id) {
           await api(`/api/appointments/${existing.id}`, { method: "PATCH", body: payload });
           toast("Cita actualizada", "success");
         } else {
-          await api("/api/appointments", { method: "POST", body: payload });
+          const resp = await api("/api/appointments", { method: "POST", body: payload });
           toast("Cita creada", "success");
+          // Si viene de una urgencia, la marcamos como agendada (sale del listado).
+          if (pf.urgencyId) {
+            await api(`/api/urgencies/${pf.urgencyId}`, { method: "PATCH", body: { status: "scheduled", appointment_id: resp.appointment ? resp.appointment.id : null } }).catch(() => {});
+          }
         }
         closeModal();
         route(location.hash.replace(/^#/, "") || "dashboard");
