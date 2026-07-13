@@ -833,9 +833,9 @@ function sentCell(ts) {
 async function renderReminders() {
   $main.innerHTML = `
     <div class="page-header">
-      <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
-        <h2>Recordatorios</h2>
-        <button class="btn" id="cfgRemBtn">Configurar recordatorios</button>
+      <h2>Recordatorios</h2>
+      <div class="actions">
+        <button class="btn primary" id="cfgRemBtn">Configurar recordatorios</button>
       </div>
     </div>
     <div class="card" id="remCard"><div class="empty-state">Cargando…</div></div>
