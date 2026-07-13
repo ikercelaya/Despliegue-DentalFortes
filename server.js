@@ -898,12 +898,37 @@ app.get("/api/appointments/:id/confirm", async (req, res) => {
   }
 });
 
-// Cadencia de recordatorios: cada tramo se envía una vez dentro de su ventana.
-const REMINDER_STEPS = [
-  { field: "reminder_3d_at", fromH: 24, toH: 72, label: "3 días" },
-  { field: "reminder_1d_at", fromH: 6, toH: 24, label: "1 día" },
-  { field: "reminder_6h_at", fromH: 0, toH: 6, label: "6 horas" },
-];
+// Cadencia de recordatorios CONFIGURABLE (horas antes de la cita). Los 3 tramos
+// se guardan siempre en estas 3 columnas, en orden descendente (más lejano primero).
+const REMINDER_FIELDS = ["reminder_3d_at", "reminder_1d_at", "reminder_6h_at"];
+const DEFAULT_REMINDER_OFFSETS = [72, 24, 6]; // 3 días, 1 día, 6 horas
+
+function fmtOffset(h) {
+  h = Number(h) || 0;
+  if (h >= 24 && h % 24 === 0) { const d = h / 24; return `${d} día${d === 1 ? "" : "s"}`; }
+  return `${h} h`;
+}
+
+async function getReminderConfig() {
+  try {
+    const { data } = await supabase.from("df_settings").select("value").eq("key", "reminder_cadence").maybeSingle();
+    let offs = data && data.value && data.value.offsets;
+    if (Array.isArray(offs) && offs.length === 3 && offs.every((n) => Number(n) > 0)) {
+      return { offsets: offs.map(Number).sort((a, b) => b - a) };
+    }
+  } catch (_e) {}
+  return { offsets: DEFAULT_REMINDER_OFFSETS.slice() };
+}
+
+// Tramos [{field, fromH, toH, label}] a partir de los offsets (horas antes de la cita).
+function buildReminderSteps(offsets) {
+  return offsets.map((h, i) => ({
+    field: REMINDER_FIELDS[i],
+    fromH: offsets[i + 1] || 0,
+    toH: h,
+    label: fmtOffset(h),
+  }));
+}
 
 function reminderText(appt, _label) {
   const cuando = new Date(appt.starts_at).toLocaleString("es-ES", {
@@ -921,8 +946,11 @@ async function runReminders() {
   const iso = (h) => new Date(now + h * 3600000).toISOString();
   const result = { sent: 0, cancelled: 0, processed: 0, errors: [], autoCancelEnabled: AUTO_CANCEL_ENABLED };
 
+  const { offsets } = await getReminderConfig();
+  const steps = buildReminderSteps(offsets);
+
   // 1) Recordatorios por cada tramo de la cadencia.
-  for (const step of REMINDER_STEPS) {
+  for (const step of steps) {
     const { data: appts } = await supabase
       .from("df_appointments")
       .select("id, starts_at, status, df_patients(full_name, phone)")
@@ -993,6 +1021,67 @@ app.get("/api/cron/reminders", async (req, res) => {
     return res.json({ ok: true, ...result });
   } catch (err) {
     console.error("[cron/reminders]", err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// Lista de próximas citas + estado de recordatorios (para el apartado Recordatorios).
+app.get("/api/reminders", requireAuth, async (_req, res) => {
+  try {
+    const cfg = await getReminderConfig();
+    const { data, error } = await supabase
+      .from("df_appointments")
+      .select("id, starts_at, status, confirmed_at, reminder_3d_at, reminder_1d_at, reminder_6h_at, auto_cancelled, df_patients(full_name, phone), df_professionals(name), df_treatments(name)")
+      .in("status", ["pending", "confirmed"])
+      .gte("starts_at", new Date().toISOString())
+      .order("starts_at", { ascending: true })
+      .limit(300);
+    if (error) throw error;
+    return res.json({ config: cfg, appointments: data || [] });
+  } catch (err) {
+    console.error("[reminders/list]", err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// Config de la cadencia (offsets en horas).
+app.get("/api/reminders/config", requireAuth, async (_req, res) => {
+  return res.json(await getReminderConfig());
+});
+app.put("/api/reminders/config", requireAuth, async (req, res) => {
+  try {
+    let offsets = (req.body && req.body.offsets) || [];
+    offsets = offsets.map(Number).filter((n) => Number.isFinite(n) && n > 0);
+    if (offsets.length !== 3) return res.status(400).json({ error: "Indica 3 valores (en horas) mayores que 0." });
+    offsets.sort((a, b) => b - a);
+    const { error } = await supabase.from("df_settings")
+      .upsert({ key: "reminder_cadence", value: { offsets }, updated_at: new Date().toISOString() }, { onConflict: "key" });
+    if (error) throw error;
+    return res.json({ offsets });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// Envío MANUAL de recordatorio a una cita (el bot manda el mensaje por WhatsApp).
+app.post("/api/appointments/:id/send-reminder", requireAuth, async (req, res) => {
+  try {
+    const wa = require("./lib/whatsapp");
+    const { data: a } = await supabase
+      .from("df_appointments")
+      .select("id, starts_at, status, df_patients(full_name, phone)")
+      .eq("id", req.params.id).maybeSingle();
+    if (!a) return res.status(404).json({ error: "Cita no encontrada." });
+    const phone = a.df_patients && a.df_patients.phone;
+    if (!phone) return res.status(400).json({ error: "El paciente no tiene teléfono en su ficha." });
+    if (!wa.isConfigured()) return res.status(400).json({ error: "WhatsApp no está configurado (falta token o número de teléfono)." });
+    try {
+      await wa.sendText(phone, reminderText(a));
+    } catch (e) {
+      return res.status(502).json({ error: "No se pudo enviar por WhatsApp: " + e.message });
+    }
+    return res.json({ ok: true });
+  } catch (err) {
     return res.status(500).json({ error: err.message });
   }
 });

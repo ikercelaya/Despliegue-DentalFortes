@@ -245,6 +245,19 @@ create table if not exists public.df_campaign_recipients (
 create index if not exists df_campaign_recipients_cid_idx on public.df_campaign_recipients (campaign_id, status);
 
 -- -----------------------------
+-- 7b) Ajustes del CRM (clave/valor) — cadencia de recordatorios, etc.
+-- -----------------------------
+create table if not exists public.df_settings (
+  key text primary key,
+  value jsonb not null default '{}'::jsonb,
+  updated_at timestamptz not null default now()
+);
+
+insert into public.df_settings (key, value)
+values ('reminder_cadence', '{"offsets":[72,24,6]}'::jsonb)
+on conflict (key) do nothing;
+
+-- -----------------------------
 -- 8) Triggers de updated_at
 -- -----------------------------
 create or replace function public.df_set_updated_at()
@@ -300,6 +313,7 @@ alter table public.df_messages enable row level security;
 alter table public.df_reviews enable row level security;
 alter table public.df_campaigns enable row level security;
 alter table public.df_campaign_recipients enable row level security;
+alter table public.df_settings enable row level security;
 
 -- Recarga el cache de PostgREST
 notify pgrst, 'reload schema';
