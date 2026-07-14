@@ -5,14 +5,392 @@ require("dotenv").config();
 process.env.TZ = "Europe/Madrid";
 
 const path = require("path");
+const crypto = require("crypto");
 const express = require("express");
 
 const { supabase } = require("./lib/db");
 const { issueToken, checkPassword, requireAuth } = require("./lib/auth");
+const { assignCabinet, CAPACITY_REASONS } = require("./lib/scheduling");
+const { ensurePaymentForAppointment } = require("./lib/billing");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 const PUBLIC_URL = (process.env.PUBLIC_URL || `http://localhost:${PORT}`).replace(/\/$/, "");
+const META_GRAPH_VERSION = process.env.META_GRAPH_VERSION || "v21.0";
+
+// Identificadores en WhatsApp para que el paciente distinga quién le escribe:
+// el asistente automático o una persona de recepción. Para cambiar el texto edita
+// aquí; para no mostrar un prefijo, define la env var correspondiente a "".
+const WA_BOT_PREFIX = process.env.WA_BOT_PREFIX ?? "🤖 Asistente virtual";
+const WA_HUMAN_PREFIX = process.env.WA_HUMAN_PREFIX ?? "👩‍⚕️ Recepción Dental Fortes";
+// Antepone el identificador (en negrita) y un salto de línea al cuerpo del mensaje.
+function withWaPrefix(prefix, body) {
+  return prefix ? `*${prefix}*\n${body}` : String(body);
+}
+const META_GRAPH_BASE = `https://graph.facebook.com/${META_GRAPH_VERSION}`;
+const GOOGLE_CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.events";
+const GOOGLE_OAUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
+const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
+const GOOGLE_CALENDAR_BASE = "https://www.googleapis.com/calendar/v3";
+const GOOGLE_REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI || `${PUBLIC_URL}/api/google/calendar/callback`;
+
+function normalizeMetaTemplateName(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9_]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 512);
+}
+
+function extractNumericTemplateVars(text) {
+  const found = new Set();
+  const re = /{{\s*(\d+)\s*}}/g;
+  let match;
+  while ((match = re.exec(String(text || "")))) found.add(Number(match[1]));
+  return [...found].filter((n) => n > 0).sort((a, b) => a - b);
+}
+
+function hasNamedTemplateVars(text) {
+  return /{{\s*[^}\d\s][^}]*}}/.test(String(text || ""));
+}
+
+function parseExampleValues(value) {
+  if (Array.isArray(value)) return value.map((v) => String(v).trim()).filter(Boolean);
+  return String(value || "")
+    .split(/\r?\n|,/)
+    .map((v) => v.trim())
+    .filter(Boolean);
+}
+
+function addTextExamples(component, exampleValues, key) {
+  const vars = extractNumericTemplateVars(component.text);
+  if (!vars.length) return;
+  for (let i = 0; i < vars.length; i++) {
+    if (vars[i] !== i + 1) {
+      throw new Error(`Las variables de ${key} deben ir seguidas: {{1}}, {{2}}, {{3}}...`);
+    }
+  }
+  const maxVar = Math.max(...vars);
+  if (exampleValues.length < maxVar) {
+    throw new Error(`Faltan ejemplos para las variables de ${key}. Necesitas ${maxVar} ejemplo(s).`);
+  }
+  if (key === "body_text") {
+    component.example = { body_text: [vars.map((n) => exampleValues[n - 1])] };
+  } else {
+    component.example = { [key]: [exampleValues[vars[0] - 1]] };
+  }
+}
+
+function googleConfig() {
+  return {
+    clientId: process.env.GOOGLE_CLIENT_ID || "",
+    clientSecret: process.env.GOOGLE_CLIENT_SECRET || "",
+    redirectUri: GOOGLE_REDIRECT_URI,
+  };
+}
+
+function requireGoogleConfig() {
+  const cfg = googleConfig();
+  if (!cfg.clientId || !cfg.clientSecret) {
+    const err = new Error("Faltan GOOGLE_CLIENT_ID y/o GOOGLE_CLIENT_SECRET en las variables de entorno.");
+    err.status = 503;
+    throw err;
+  }
+  return cfg;
+}
+
+function googleStateSecret() {
+  return process.env.GOOGLE_STATE_SECRET || process.env.SESSION_SECRET || process.env.ADMIN_PASSWORD_HASH || "df-google-state-dev";
+}
+
+function googleTokenKey() {
+  const secret = process.env.GOOGLE_TOKEN_SECRET || process.env.SESSION_SECRET || process.env.ADMIN_PASSWORD_HASH || "df-google-token-dev";
+  return crypto.createHash("sha256").update(secret).digest();
+}
+
+function signGoogleState(payload) {
+  const body = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  const sig = crypto.createHmac("sha256", googleStateSecret()).update(body).digest("base64url");
+  return `${body}.${sig}`;
+}
+
+function verifyGoogleState(state) {
+  const [body, sig] = String(state || "").split(".");
+  if (!body || !sig) throw new Error("State OAuth no valido.");
+  const expected = crypto.createHmac("sha256", googleStateSecret()).update(body).digest("base64url");
+  const a = Buffer.from(sig);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) throw new Error("State OAuth no valido.");
+  const payload = JSON.parse(Buffer.from(body, "base64url").toString("utf8"));
+  if (!payload.professional_id || !payload.exp || Date.now() > payload.exp) throw new Error("State OAuth caducado.");
+  return payload;
+}
+
+function encryptGoogleToken(value) {
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", googleTokenKey(), iv);
+  const encrypted = Buffer.concat([cipher.update(String(value), "utf8"), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return `v1:${iv.toString("base64url")}:${tag.toString("base64url")}:${encrypted.toString("base64url")}`;
+}
+
+function decryptGoogleToken(value) {
+  const [version, ivRaw, tagRaw, encryptedRaw] = String(value || "").split(":");
+  if (version !== "v1" || !ivRaw || !tagRaw || !encryptedRaw) throw new Error("Token de Google no valido.");
+  const decipher = crypto.createDecipheriv("aes-256-gcm", googleTokenKey(), Buffer.from(ivRaw, "base64url"));
+  decipher.setAuthTag(Buffer.from(tagRaw, "base64url"));
+  return Buffer.concat([
+    decipher.update(Buffer.from(encryptedRaw, "base64url")),
+    decipher.final(),
+  ]).toString("utf8");
+}
+
+function adminRedirectWithGoogleStatus(status, message, professionalId) {
+  const params = new URLSearchParams({ google_calendar: status });
+  if (message) params.set("google_calendar_message", message);
+  if (professionalId) params.set("professional_id", professionalId);
+  return `${PUBLIC_URL}/admin?${params.toString()}#agenda`;
+}
+
+async function exchangeGoogleCode(code) {
+  const cfg = requireGoogleConfig();
+  const body = new URLSearchParams({
+    code,
+    client_id: cfg.clientId,
+    client_secret: cfg.clientSecret,
+    redirect_uri: cfg.redirectUri,
+    grant_type: "authorization_code",
+  });
+  const r = await fetch(GOOGLE_TOKEN_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body,
+  });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.error_description || data.error || "Google no devolvio tokens.");
+  return data;
+}
+
+async function refreshGoogleAccessToken(encryptedRefreshToken) {
+  const cfg = requireGoogleConfig();
+  const refreshToken = decryptGoogleToken(encryptedRefreshToken);
+  const body = new URLSearchParams({
+    client_id: cfg.clientId,
+    client_secret: cfg.clientSecret,
+    refresh_token: refreshToken,
+    grant_type: "refresh_token",
+  });
+  const r = await fetch(GOOGLE_TOKEN_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body,
+  });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok || !data.access_token) throw new Error(data.error_description || data.error || "No se pudo renovar el acceso a Google.");
+  return data.access_token;
+}
+
+async function googleCalendarRequest(professional, method, pathPart, body) {
+  if (!professional?.google_calendar_refresh_token || !professional.google_calendar_sync_enabled) {
+    throw new Error("El profesional no tiene Google Calendar sincronizado.");
+  }
+  const accessToken = await refreshGoogleAccessToken(professional.google_calendar_refresh_token);
+  const r = await fetch(`${GOOGLE_CALENDAR_BASE}${pathPart}`, {
+    method,
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const text = await r.text();
+  let data = {};
+  if (text) {
+    try { data = JSON.parse(text); } catch (_e) { data = { error: text }; }
+  }
+  if (!r.ok) {
+    const err = new Error(data.error?.message || data.error_description || data.error || `Google Calendar error ${r.status}`);
+    err.status = r.status;
+    throw err;
+  }
+  return data;
+}
+
+async function getGoogleProfessional(professionalId) {
+  if (!professionalId) return null;
+  const { data, error } = await supabase
+    .from("df_professionals")
+    .select("id, name, google_calendar_id, google_calendar_refresh_token, google_calendar_sync_enabled")
+    .eq("id", professionalId)
+    .maybeSingle();
+  if (error) throw error;
+  return data;
+}
+
+async function deleteGoogleEventForProfessional(professionalId, eventId) {
+  if (!professionalId || !eventId) return;
+  const professional = await getGoogleProfessional(professionalId);
+  if (!professional?.google_calendar_refresh_token) return;
+  const calendarId = encodeURIComponent(professional.google_calendar_id || "primary");
+  const googleEventId = encodeURIComponent(eventId);
+  try {
+    await googleCalendarRequest(professional, "DELETE", `/calendars/${calendarId}/events/${googleEventId}`);
+  } catch (err) {
+    if (![404, 410].includes(err.status)) throw err;
+  }
+}
+
+function buildGoogleEvent(appointment) {
+  const patientName = appointment.df_patients?.full_name || "Paciente";
+  const treatmentName = appointment.df_treatments?.name || "Cita";
+  const professionalName = appointment.df_professionals?.name || "Dental Fortes";
+  const lines = [
+    `Paciente: ${patientName}`,
+    `Tratamiento: ${treatmentName}`,
+    `Profesional CRM: ${professionalName}`,
+    "",
+    "Evento sincronizado automaticamente desde Dental Fortes CRM.",
+  ];
+  return {
+    summary: `Dental Fortes - ${patientName}`,
+    description: lines.join("\n"),
+    start: { dateTime: appointment.starts_at, timeZone: "Europe/Madrid" },
+    end: { dateTime: appointment.ends_at, timeZone: "Europe/Madrid" },
+    reminders: { useDefault: true },
+    extendedProperties: { private: { dental_fortes_appointment_id: appointment.id } },
+  };
+}
+
+async function loadAppointmentForGoogle(id) {
+  const { data, error } = await supabase
+    .from("df_appointments")
+    .select("id, patient_id, professional_id, treatment_id, starts_at, ends_at, status, google_event_id, df_patients(full_name), df_professionals(id, name, google_calendar_id, google_calendar_refresh_token, google_calendar_sync_enabled), df_treatments(name)")
+    .eq("id", id)
+    .maybeSingle();
+  if (error) throw error;
+  return data;
+}
+
+async function syncAppointmentToGoogle(appointmentId, previous = null) {
+  const appointment = await loadAppointmentForGoogle(appointmentId);
+  if (!appointment) return { action: "missing" };
+
+  if (previous?.professional_id && previous.professional_id !== appointment.professional_id && previous.google_event_id) {
+    await deleteGoogleEventForProfessional(previous.professional_id, previous.google_event_id);
+    appointment.google_event_id = null;
+    await supabase.from("df_appointments").update({
+      google_event_id: null,
+      google_synced_at: null,
+    }).eq("id", appointment.id);
+  }
+
+  const shouldSync = appointment.status === "confirmed" &&
+    appointment.professional_id &&
+    appointment.df_professionals?.google_calendar_refresh_token &&
+    appointment.df_professionals?.google_calendar_sync_enabled;
+
+  if (!shouldSync) {
+    const shouldRemoveEvent = ["pending", "cancelled"].includes(appointment.status);
+    if (appointment.google_event_id && appointment.professional_id) {
+      if (shouldRemoveEvent) {
+        await deleteGoogleEventForProfessional(appointment.professional_id, appointment.google_event_id);
+        await supabase.from("df_appointments").update({
+          google_event_id: null,
+          google_synced_at: null,
+          google_sync_error: null,
+        }).eq("id", appointment.id);
+        return { action: "deleted" };
+      }
+      return { action: "kept" };
+    }
+    return { action: "skipped" };
+  }
+
+  const professional = appointment.df_professionals;
+  const calendarId = encodeURIComponent(professional.google_calendar_id || "primary");
+  const body = buildGoogleEvent(appointment);
+  let googleEvent;
+
+  try {
+    if (appointment.google_event_id) {
+      googleEvent = await googleCalendarRequest(
+        professional,
+        "PATCH",
+        `/calendars/${calendarId}/events/${encodeURIComponent(appointment.google_event_id)}?sendUpdates=none`,
+        body
+      );
+    } else {
+      googleEvent = await googleCalendarRequest(
+        professional,
+        "POST",
+        `/calendars/${calendarId}/events?sendUpdates=none`,
+        body
+      );
+    }
+  } catch (err) {
+    if (appointment.google_event_id && [404, 410].includes(err.status)) {
+      googleEvent = await googleCalendarRequest(
+        professional,
+        "POST",
+        `/calendars/${calendarId}/events?sendUpdates=none`,
+        body
+      );
+    } else {
+      await supabase.from("df_appointments").update({ google_sync_error: err.message }).eq("id", appointment.id);
+      await supabase.from("df_professionals").update({ google_calendar_sync_error: err.message }).eq("id", professional.id);
+      throw err;
+    }
+  }
+
+  await supabase.from("df_appointments").update({
+    google_event_id: googleEvent.id || appointment.google_event_id,
+    google_synced_at: new Date().toISOString(),
+    google_sync_error: null,
+  }).eq("id", appointment.id);
+  await supabase.from("df_professionals").update({
+    google_calendar_last_sync_at: new Date().toISOString(),
+    google_calendar_sync_error: null,
+  }).eq("id", professional.id);
+  return { action: appointment.google_event_id ? "updated" : "created", google_event_id: googleEvent.id };
+}
+
+async function syncProfessionalGoogleCalendar(professionalId) {
+  const professional = await getGoogleProfessional(professionalId);
+  if (!professional) throw new Error("Profesional no encontrado.");
+  if (!professional.google_calendar_refresh_token || !professional.google_calendar_sync_enabled) {
+    throw new Error("Este profesional aun no ha vinculado Google Calendar.");
+  }
+  const from = new Date();
+  from.setDate(from.getDate() - 1);
+  const { data, error } = await supabase
+    .from("df_appointments")
+    .select("id")
+    .eq("professional_id", professionalId)
+    .gte("starts_at", from.toISOString())
+    .order("starts_at", { ascending: true })
+    .limit(500);
+  if (error) throw error;
+
+  const result = { synced: 0, skipped: 0, deleted: 0, errors: [] };
+  for (const row of data || []) {
+    try {
+      const item = await syncAppointmentToGoogle(row.id);
+      if (item.action === "created" || item.action === "updated") result.synced++;
+      else if (item.action === "deleted") result.deleted++;
+      else result.skipped++;
+    } catch (err) {
+      result.errors.push({ id: row.id, error: err.message });
+    }
+  }
+  await supabase.from("df_professionals").update({
+    google_calendar_last_sync_at: new Date().toISOString(),
+    google_calendar_sync_error: result.errors[0]?.error || null,
+  }).eq("id", professionalId);
+  return result;
+}
 
 app.use(express.json({ limit: "8mb", verify: (req, _res, buf) => { req.rawBody = buf; } }));
 app.use(express.static(path.join(__dirname, "public")));
@@ -92,6 +470,111 @@ app.get("/api/dashboard/stats", requireAuth, async (_req, res) => {
   }
 });
 
+// Facturación del dashboard (con filtros: tratamiento, profesional, edad, periodo).
+app.get("/api/dashboard/billing", requireAuth, async (req, res) => {
+  try {
+    const { from, to, treatment_id, professional_id, age_min, age_max } = req.query;
+    const ageMin = age_min ? Number(age_min) : null;
+    const ageMax = age_max ? Number(age_max) : null;
+    const fromT = from ? Date.parse(from) : null;
+    const toT = to ? Date.parse(to) : null;
+
+    const [{ data: appts }, { data: pays }] = await Promise.all([
+      supabase.from("df_appointments")
+        .select("id, starts_at, status, treatment_id, professional_id, df_professionals(name), df_treatments(name), df_patients(birth_date)"),
+      supabase.from("df_patient_payments")
+        .select("amount_eur, paid, paid_at, created_at, appointment_id, df_patients(birth_date)"),
+    ]);
+    const apptMap = Object.fromEntries((appts || []).map((a) => [a.id, a]));
+
+    const now = new Date();
+    const ageOf = (bd) => {
+      if (!bd) return null;
+      const d = new Date(bd); if (isNaN(d.getTime())) return null;
+      let age = now.getFullYear() - d.getFullYear();
+      const m = now.getMonth() - d.getMonth();
+      if (m < 0 || (m === 0 && now.getDate() < d.getDate())) age--;
+      return age;
+    };
+    const filterAge = ageMin != null || ageMax != null;
+    const ageOk = (age) => (ageMin == null || (age != null && age >= ageMin)) && (ageMax == null || (age != null && age <= ageMax));
+    const round2 = (n) => Math.round((n + Number.EPSILON) * 100) / 100;
+    const monthKey = (s) => { const d = new Date(s); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0"); };
+
+    // Facturación (a partir de los cobros)
+    let totalFacturado = 0, totalPendiente = 0, numPagos = 0, numPendientes = 0;
+    const byTreatment = {}, byMonth = {}, byProfFacturado = {};
+    for (const p of pays || []) {
+      const a = p.appointment_id ? apptMap[p.appointment_id] : null;
+      const tId = a ? a.treatment_id : null;
+      const pId = a ? a.professional_id : null;
+      const tName = (a && a.df_treatments && a.df_treatments.name) || "Otros";
+      const pName = (a && a.df_professionals && a.df_professionals.name) || "Sin profesional";
+      const bd = (a && a.df_patients && a.df_patients.birth_date) || (p.df_patients && p.df_patients.birth_date) || null;
+      if (treatment_id && tId !== treatment_id) continue;
+      if (professional_id && pId !== professional_id) continue;
+      if (filterAge && !ageOk(ageOf(bd))) continue;
+      const refDate = p.paid ? (p.paid_at || p.created_at) : ((a && a.starts_at) || p.created_at);
+      const rt = Date.parse(refDate);
+      if (fromT && rt < fromT) continue;
+      if (toT && rt > toT) continue;
+      const amt = Number(p.amount_eur) || 0;
+      if (p.paid) {
+        totalFacturado += amt; numPagos++;
+        byTreatment[tName] = (byTreatment[tName] || 0) + amt;
+        const mk = monthKey(p.paid_at || p.created_at);
+        byMonth[mk] = (byMonth[mk] || 0) + amt;
+        byProfFacturado[pName] = (byProfFacturado[pName] || 0) + amt;
+      } else {
+        totalPendiente += amt; numPendientes++;
+      }
+    }
+
+    // Citas por profesional (para las métricas por profesional).
+    // Se cuenta cada cita UNA sola vez (dedupe defensivo por id).
+    const byProfCitas = {};
+    const vistas = new Set();
+    for (const a of appts || []) {
+      if (!a || vistas.has(a.id)) continue;
+      vistas.add(a.id);
+      if (a.status === "cancelled") continue;
+      const pName = (a.df_professionals && a.df_professionals.name) || "Sin profesional";
+      if (treatment_id && a.treatment_id !== treatment_id) continue;
+      if (professional_id && a.professional_id !== professional_id) continue;
+      if (filterAge && !ageOk(ageOf(a.df_patients && a.df_patients.birth_date))) continue;
+      const rt = Date.parse(a.starts_at);
+      if (fromT && rt < fromT) continue;
+      if (toT && rt > toT) continue;
+      byProfCitas[pName] = (byProfCitas[pName] || 0) + 1;
+    }
+
+    // Últimos 6 meses (relleno de meses vacíos)
+    const meses = [];
+    for (let i = 5; i >= 0; i--) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      meses.push({ key: d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0"), label: d.toLocaleDateString("es-ES", { month: "short" }) });
+    }
+    const byMonthArr = meses.map((m) => ({ month: m.key, label: m.label, amount: round2(byMonth[m.key] || 0) }));
+    const byTreatmentArr = Object.entries(byTreatment).map(([name, amount]) => ({ name, amount: round2(amount) })).sort((a, b) => b.amount - a.amount);
+    const profNames = new Set([...Object.keys(byProfCitas), ...Object.keys(byProfFacturado)]);
+    const byProfessional = [...profNames]
+      .map((name) => ({ name, citas: byProfCitas[name] || 0, facturado: round2(byProfFacturado[name] || 0) }))
+      .sort((a, b) => b.facturado - a.facturado || b.citas - a.citas);
+
+    return res.json({
+      totalFacturado: round2(totalFacturado),
+      totalPendiente: round2(totalPendiente),
+      numPagos, numPendientes,
+      byTreatment: byTreatmentArr,
+      byMonth: byMonthArr,
+      byProfessional,
+    });
+  } catch (err) {
+    console.error("[billing]", err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 // =============================================================
 // AGENDA / CITAS
 // =============================================================
@@ -119,23 +602,55 @@ app.post("/api/appointments", requireAuth, async (req, res) => {
   try {
     const body = req.body || {};
     if (!body.starts_at || !body.ends_at) return res.status(400).json({ error: "Faltan fechas." });
+    const isFirstVisit = !!body.is_first_visit;
+    let cabinet = body.cabinet != null ? Number(body.cabinet) : null;
+
+    // Capacidad y gabinete (reglas de agenda). El personal puede forzar con force:true.
+    if (!body.force) {
+      const cap = await assignCabinet({
+        supabase,
+        startISO: body.starts_at,
+        endISO: body.ends_at,
+        isFirstVisit,
+        professionalId: body.professional_id || null,
+        desiredCabinet: cabinet, // si el personal eligió gabinete, se valida que esté libre
+      });
+      if (!cap.ok) {
+        return res.status(409).json({ error: CAPACITY_REASONS[cap.reason] || "Sin disponibilidad a esa hora.", reason: cap.reason });
+      }
+      cabinet = cap.cabinet; // usa el gabinete validado (respeta el elegido si estaba libre)
+    }
+
+    const status = body.status || "pending";
     const { data, error } = await supabase
       .from("df_appointments")
       .insert({
         patient_id: body.patient_id || null,
         professional_id: body.professional_id || null,
         treatment_id: body.treatment_id || null,
+        cabinet,
         starts_at: body.starts_at,
         ends_at: body.ends_at,
-        status: body.status || "pending",
-        is_first_visit: !!body.is_first_visit,
+        status,
+        is_first_visit: isFirstVisit,
         is_urgent: !!body.is_urgent,
+        confirmed_at: status === "confirmed" ? new Date().toISOString() : null,
         source: body.source || "manual",
         notes: body.notes || null,
       })
       .select()
       .single();
     if (error) throw error;
+
+    // Cobro automático: si el tratamiento tiene precio, genera un cobro pendiente.
+    await ensurePaymentForAppointment(supabase, {
+      appointmentId: data.id, patientId: data.patient_id,
+      treatmentId: data.treatment_id, startsAt: data.starts_at,
+    }).catch((e) => console.error("[appointments/pago]", e.message));
+    if (data.status === "confirmed") {
+      await syncAppointmentToGoogle(data.id).catch((e) => console.error("[google-calendar/create]", e.message));
+    }
+
     return res.json({ appointment: data });
   } catch (err) {
     console.error("[appointments/create]", err);
@@ -145,9 +660,51 @@ app.post("/api/appointments", requireAuth, async (req, res) => {
 
 app.patch("/api/appointments/:id", requireAuth, async (req, res) => {
   try {
-    const allowed = ["patient_id","professional_id","treatment_id","starts_at","ends_at","status","is_first_visit","is_urgent","notes"];
+    const body = req.body || {};
+    const allowed = ["patient_id","professional_id","treatment_id","cabinet","starts_at","ends_at","status","is_first_visit","is_urgent","notes"];
     const patch = {};
-    for (const k of allowed) if (k in (req.body || {})) patch[k] = req.body[k];
+    for (const k of allowed) if (k in body) patch[k] = body[k];
+    const { data: before, error: beforeError } = await supabase
+      .from("df_appointments")
+      .select("*")
+      .eq("id", req.params.id)
+      .maybeSingle();
+    if (beforeError) throw beforeError;
+    if (!before) return res.status(404).json({ error: "Cita no encontrada." });
+
+    // Revalida capacidad SOLO si el tramo/profesional/tipo/gabinete cambia de verdad
+    // (el panel reenvía esos campos aunque no los toques; comparándolos con el valor
+    // actual evitamos 409 espurios al editar solo notas/estado, p. ej. al confirmar).
+    const touchesScheduleKeys = ["starts_at","ends_at","professional_id","is_first_visit","cabinet"].some((k) => k in patch);
+    if (touchesScheduleKeys && !body.force) {
+      const cur = before;
+      if (cur) {
+        const sameTime = (a, b) => { const x = Date.parse(a), y = Date.parse(b); return !isNaN(x) && !isNaN(y) && x === y; };
+        const changed =
+          ("starts_at" in patch && !sameTime(patch.starts_at, cur.starts_at)) ||
+          ("ends_at" in patch && !sameTime(patch.ends_at, cur.ends_at)) ||
+          ("professional_id" in patch && (patch.professional_id || null) !== (cur.professional_id || null)) ||
+          ("is_first_visit" in patch && !!patch.is_first_visit !== !!cur.is_first_visit) ||
+          ("cabinet" in patch && Number(patch.cabinet || 0) !== Number(cur.cabinet || 0));
+        if (changed) {
+          const startISO = patch.starts_at || cur.starts_at;
+          const endISO = patch.ends_at || cur.ends_at;
+          const isFV = "is_first_visit" in patch ? !!patch.is_first_visit : !!cur.is_first_visit;
+          const proId = "professional_id" in patch ? (patch.professional_id || null) : cur.professional_id;
+          const desired = "cabinet" in patch ? patch.cabinet : cur.cabinet;
+          const cap = await assignCabinet({ supabase, startISO, endISO, isFirstVisit: isFV, professionalId: proId, excludeId: cur.id, desiredCabinet: desired });
+          if (!cap.ok) {
+            return res.status(409).json({ error: CAPACITY_REASONS[cap.reason] || "Sin disponibilidad a esa hora.", reason: cap.reason });
+          }
+          patch.cabinet = cap.cabinet; // gabinete validado
+        }
+      }
+    }
+
+    // Confirmación: al pasar a 'confirmed' sella la fecha; al reabrir a 'pending' la limpia.
+    if (patch.status === "confirmed") patch.confirmed_at = new Date().toISOString();
+    else if (patch.status === "pending") patch.confirmed_at = null;
+
     const { data, error } = await supabase
       .from("df_appointments")
       .update(patch)
@@ -155,6 +712,7 @@ app.patch("/api/appointments/:id", requireAuth, async (req, res) => {
       .select()
       .single();
     if (error) throw error;
+    await syncAppointmentToGoogle(data.id, before).catch((e) => console.error("[google-calendar/update]", e.message));
     return res.json({ appointment: data });
   } catch (err) {
     console.error("[appointments/update]", err);
@@ -164,9 +722,410 @@ app.patch("/api/appointments/:id", requireAuth, async (req, res) => {
 
 app.delete("/api/appointments/:id", requireAuth, async (req, res) => {
   try {
+    const { data: before } = await supabase
+      .from("df_appointments")
+      .select("id, professional_id, google_event_id")
+      .eq("id", req.params.id)
+      .maybeSingle();
     const { error } = await supabase.from("df_appointments").delete().eq("id", req.params.id);
     if (error) throw error;
+    if (before?.google_event_id) {
+      await deleteGoogleEventForProfessional(before.professional_id, before.google_event_id)
+        .catch((e) => console.error("[google-calendar/delete]", e.message));
+    }
     return res.json({ ok: true });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// =============================================================
+// CONFIRMACIÓN DE CITAS + RECORDATORIOS (cadencia 3 días / 1 día / 6 horas)
+// -------------------------------------------------------------
+// El paciente confirma con un enlace con token (público). Un cron recorre la
+// cadencia de recordatorios y, si está activado, autocancela las no confirmadas
+// para liberar el hueco.
+// =============================================================
+// =============================================================
+// GOOGLE CALENDAR - OAuth por profesional
+// =============================================================
+app.post("/api/professionals/:id/google/connect-url", requireAuth, async (req, res) => {
+  try {
+    const cfg = requireGoogleConfig();
+    const { data: professional, error } = await supabase
+      .from("df_professionals")
+      .select("id, name")
+      .eq("id", req.params.id)
+      .maybeSingle();
+    if (error) throw error;
+    if (!professional) return res.status(404).json({ error: "Profesional no encontrado." });
+
+    const state = signGoogleState({
+      professional_id: professional.id,
+      iat: Date.now(),
+      exp: Date.now() + 10 * 60 * 1000,
+      nonce: crypto.randomBytes(12).toString("base64url"),
+    });
+    const params = new URLSearchParams({
+      client_id: cfg.clientId,
+      redirect_uri: cfg.redirectUri,
+      response_type: "code",
+      scope: GOOGLE_CALENDAR_SCOPE,
+      access_type: "offline",
+      prompt: "consent",
+      include_granted_scopes: "true",
+      state,
+    });
+    return res.json({ url: `${GOOGLE_OAUTH_URL}?${params.toString()}` });
+  } catch (err) {
+    console.error("[google-calendar/connect-url]", err);
+    return res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+app.get("/api/google/calendar/callback", async (req, res) => {
+  try {
+    if (req.query.error) {
+      return res.redirect(302, adminRedirectWithGoogleStatus("error", String(req.query.error_description || req.query.error)));
+    }
+    const code = String(req.query.code || "");
+    if (!code) throw new Error("Google no ha devuelto codigo OAuth.");
+    const state = verifyGoogleState(req.query.state);
+    const tokens = await exchangeGoogleCode(code);
+    if (!tokens.refresh_token) {
+      throw new Error("Google no ha devuelto refresh_token. Vuelve a conectar y acepta de nuevo los permisos.");
+    }
+    const { error } = await supabase
+      .from("df_professionals")
+      .update({
+        google_calendar_id: "primary",
+        google_calendar_refresh_token: encryptGoogleToken(tokens.refresh_token),
+        google_calendar_sync_enabled: true,
+        google_calendar_connected_at: new Date().toISOString(),
+        google_calendar_sync_error: null,
+      })
+      .eq("id", state.professional_id);
+    if (error) throw error;
+    await syncProfessionalGoogleCalendar(state.professional_id).catch((e) => console.error("[google-calendar/initial-sync]", e.message));
+    return res.redirect(302, adminRedirectWithGoogleStatus("connected", "", state.professional_id));
+  } catch (err) {
+    console.error("[google-calendar/callback]", err);
+    return res.redirect(302, adminRedirectWithGoogleStatus("error", err.message));
+  }
+});
+
+app.post("/api/professionals/:id/google/sync", requireAuth, async (req, res) => {
+  try {
+    const result = await syncProfessionalGoogleCalendar(req.params.id);
+    return res.json({ ok: result.errors.length === 0, ...result });
+  } catch (err) {
+    console.error("[google-calendar/sync]", err);
+    return res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+app.post("/api/professionals/:id/google/disconnect", requireAuth, async (req, res) => {
+  try {
+    const { data: appointments } = await supabase
+      .from("df_appointments")
+      .select("id, google_event_id")
+      .eq("professional_id", req.params.id)
+      .not("google_event_id", "is", null);
+    for (const appt of appointments || []) {
+      await deleteGoogleEventForProfessional(req.params.id, appt.google_event_id).catch(() => {});
+    }
+    await supabase.from("df_appointments").update({
+      google_event_id: null,
+      google_synced_at: null,
+      google_sync_error: null,
+    }).eq("professional_id", req.params.id);
+    const { error } = await supabase.from("df_professionals").update({
+      google_calendar_refresh_token: null,
+      google_calendar_sync_enabled: false,
+      google_calendar_connected_at: null,
+      google_calendar_last_sync_at: null,
+      google_calendar_sync_error: null,
+    }).eq("id", req.params.id);
+    if (error) throw error;
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("[google-calendar/disconnect]", err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+const CONFIRM_SECRET = process.env.CONFIRM_SECRET || process.env.SESSION_SECRET || process.env.ADMIN_PASSWORD || "df-confirm-secret";
+const AUTO_CANCEL_HOURS = Number(process.env.AUTO_CANCEL_HOURS || 2);
+const AUTO_CANCEL_ENABLED = /^(1|true|si|sí|on)$/i.test(String(process.env.AUTO_CANCEL_ENABLED || ""));
+
+function confirmToken(id) {
+  return crypto.createHmac("sha256", CONFIRM_SECRET).update(String(id)).digest("hex").slice(0, 32);
+}
+function confirmLink(id) {
+  return `${PUBLIC_URL}/api/appointments/${id}/confirm?t=${confirmToken(id)}`;
+}
+function confirmPage(message) {
+  return `<!doctype html><html lang="es"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dental Fortes</title>
+<style>body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#0f0f0f;color:#ececec;
+display:flex;min-height:100vh;align-items:center;justify-content:center;margin:0;padding:24px}
+.card{max-width:420px;text-align:center;background:#181818;border:1px solid #2a2a2a;border-radius:16px;padding:32px}
+h1{font-size:18px;margin:0 0 8px}p{color:#b8b8b8;margin:0}</style></head>
+<body><div class="card"><h1>Dental Fortes</h1><p>${message}</p></div></body></html>`;
+}
+
+// Confirmación pública (el paciente pincha el enlace del recordatorio).
+app.get("/api/appointments/:id/confirm", async (req, res) => {
+  res.set("Content-Type", "text/html; charset=utf-8");
+  try {
+    const id = req.params.id;
+    const expBuf = Buffer.from(confirmToken(id));
+    const gotBuf = Buffer.from(String(req.query.t || ""));
+    const valid = gotBuf.length === expBuf.length && crypto.timingSafeEqual(gotBuf, expBuf);
+    if (!valid) return res.status(403).send(confirmPage("Enlace no válido."));
+    const { data: appt } = await supabase
+      .from("df_appointments").select("id, status").eq("id", id).maybeSingle();
+    if (!appt) return res.status(404).send(confirmPage("No hemos encontrado la cita."));
+    if (appt.status === "cancelled") {
+      return res.status(200).send(confirmPage("Esta cita estaba cancelada. Por favor, contacte con la clínica."));
+    }
+    if (appt.status !== "pending" && appt.status !== "confirmed") {
+      // 'done' / 'no_show': ya no tiene sentido confirmarla.
+      return res.status(200).send(confirmPage("Esta cita ya no está activa. Si necesita algo, contacte con la clínica."));
+    }
+    if (appt.status === "confirmed") {
+      return res.status(200).send(confirmPage("Su cita ya estaba confirmada. ¡Le esperamos!"));
+    }
+    const { error: updateError } = await supabase.from("df_appointments")
+      .update({ status: "confirmed", confirmed_at: new Date().toISOString() }).eq("id", id);
+    if (updateError) throw updateError;
+    await syncAppointmentToGoogle(id).catch((e) => console.error("[google-calendar/confirm]", e.message));
+    return res.status(200).send(confirmPage("¡Gracias! Su cita ha quedado confirmada."));
+  } catch (err) {
+    console.error("[confirm]", err);
+    return res.status(500).send(confirmPage("No se ha podido confirmar ahora mismo. Inténtelo más tarde."));
+  }
+});
+
+// Cadencia de recordatorios CONFIGURABLE (horas antes de la cita). Los 3 tramos
+// se guardan siempre en estas 3 columnas, en orden descendente (más lejano primero).
+const REMINDER_FIELDS = ["reminder_3d_at", "reminder_1d_at", "reminder_6h_at"];
+const DEFAULT_REMINDER_OFFSETS = [72, 24, 6]; // 3 días, 1 día, 6 horas
+
+function fmtOffset(h) {
+  h = Number(h) || 0;
+  if (h >= 24 && h % 24 === 0) { const d = h / 24; return `${d} día${d === 1 ? "" : "s"}`; }
+  return `${h} h`;
+}
+
+async function getReminderConfig() {
+  try {
+    const { data } = await supabase.from("df_settings").select("value").eq("key", "reminder_cadence").maybeSingle();
+    let offs = data && data.value && data.value.offsets;
+    if (Array.isArray(offs) && offs.length === 3 && offs.every((n) => Number(n) > 0)) {
+      return { offsets: offs.map(Number).sort((a, b) => b - a) };
+    }
+  } catch (_e) {}
+  return { offsets: DEFAULT_REMINDER_OFFSETS.slice() };
+}
+
+// Tramos [{field, fromH, toH, label}] a partir de los offsets (horas antes de la cita).
+function buildReminderSteps(offsets) {
+  return offsets.map((h, i) => ({
+    field: REMINDER_FIELDS[i],
+    fromH: offsets[i + 1] || 0,
+    toH: h,
+    label: fmtOffset(h),
+  }));
+}
+
+function reminderText(appt, _label) {
+  const cuando = new Date(appt.starts_at).toLocaleString("es-ES", {
+    weekday: "long", day: "2-digit", month: "long", hour: "2-digit", minute: "2-digit", timeZone: "Europe/Madrid",
+  });
+  const nombre = appt.df_patients?.full_name ? " " + String(appt.df_patients.full_name).split(" ")[0] : "";
+  return `Hola${nombre}, le recordamos su cita en Dental Fortes el ${cuando}. ` +
+    `Por favor, confírmela para mantenerla: ${confirmLink(appt.id)} ` +
+    `Si no se confirma, el hueco podría liberarse. Gracias.`;
+}
+
+async function runReminders() {
+  const wa = require("./lib/whatsapp");
+  const now = Date.now();
+  const iso = (h) => new Date(now + h * 3600000).toISOString();
+  const result = { sent: 0, cancelled: 0, processed: 0, errors: [], autoCancelEnabled: AUTO_CANCEL_ENABLED };
+
+  const { offsets } = await getReminderConfig();
+  const steps = buildReminderSteps(offsets);
+
+  // 1) Recordatorios por cada tramo de la cadencia.
+  for (const step of steps) {
+    const { data: appts } = await supabase
+      .from("df_appointments")
+      .select("id, starts_at, status, df_patients(full_name, phone)")
+      .in("status", ["pending", "confirmed"])
+      .is(step.field, null)
+      .gt("starts_at", iso(step.fromH))
+      .lte("starts_at", iso(step.toH));
+    for (const a of appts || []) {
+      result.processed++;
+      const phone = a.df_patients?.phone;
+      let sent = false;
+      try {
+        // Solo tiene sentido recordar las que aún están pendientes de confirmar.
+        if (a.status !== "confirmed" && phone && wa.isConfigured()) {
+          await wa.sendText(phone, reminderText(a, step.label));
+          result.sent++;
+          sent = true;
+        }
+      } catch (e) {
+        result.errors.push(`${a.id} (${step.label}): ${e.message}`);
+      }
+      // Marca el tramo SOLO si el recordatorio se envió de verdad (o si ya está
+      // confirmada y no necesita aviso). Si no se pudo avisar, se deja para el
+      // próximo intento y NUNCA se autocancela sin haber avisado al paciente.
+      if (sent || a.status === "confirmed") {
+        await supabase.from("df_appointments").update({ [step.field]: new Date().toISOString() }).eq("id", a.id);
+      }
+    }
+  }
+
+  // 2) Autocancelación de citas NO confirmadas (si está habilitada).
+  //    Requiere que ya se les enviara el recordatorio de 6h hace >1h.
+  if (AUTO_CANCEL_ENABLED) {
+    const graceISO = new Date(now - 3600000).toISOString();
+    const { data: toCancel } = await supabase
+      .from("df_appointments")
+      .select("id, notes")
+      .eq("status", "pending")
+      .is("confirmed_at", null)
+      .not("reminder_6h_at", "is", null)
+      .lt("reminder_6h_at", graceISO)
+      .gt("starts_at", new Date(now).toISOString())
+      .lte("starts_at", iso(AUTO_CANCEL_HOURS));
+    for (const a of toCancel || []) {
+      await supabase.from("df_appointments").update({
+        status: "cancelled",
+        auto_cancelled: true,
+        notes: [a.notes, "Cancelada automáticamente por falta de confirmación"].filter(Boolean).join(" · "),
+      }).eq("id", a.id);
+      result.cancelled++;
+    }
+  }
+  return result;
+}
+
+function checkCronAuth(req) {
+  const secret = process.env.CRON_SECRET;
+  if (!secret) return true; // sin secreto: se permite (protégelo con CRON_SECRET en Vercel)
+  if ((req.get("authorization") || "") === `Bearer ${secret}`) return true;
+  if (String(req.query.key || "") === secret) return true;
+  return false;
+}
+
+app.get("/api/cron/reminders", async (req, res) => {
+  if (!checkCronAuth(req)) return res.sendStatus(401);
+  try {
+    const result = await runReminders();
+    return res.json({ ok: true, ...result });
+  } catch (err) {
+    console.error("[cron/reminders]", err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// Lista de próximas citas + estado de recordatorios (para el apartado Recordatorios).
+app.get("/api/reminders", requireAuth, async (_req, res) => {
+  try {
+    const cfg = await getReminderConfig();
+    const { data, error } = await supabase
+      .from("df_appointments")
+      .select("id, starts_at, status, confirmed_at, reminder_3d_at, reminder_1d_at, reminder_6h_at, auto_cancelled, df_patients(full_name, phone), df_professionals(name), df_treatments(name)")
+      .in("status", ["pending", "confirmed"])
+      .gte("starts_at", new Date().toISOString())
+      .order("starts_at", { ascending: true })
+      .limit(300);
+    if (error) throw error;
+    return res.json({ config: cfg, appointments: data || [] });
+  } catch (err) {
+    console.error("[reminders/list]", err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// Config de la cadencia (offsets en horas).
+app.get("/api/reminders/config", requireAuth, async (_req, res) => {
+  return res.json(await getReminderConfig());
+});
+app.put("/api/reminders/config", requireAuth, async (req, res) => {
+  try {
+    let offsets = (req.body && req.body.offsets) || [];
+    offsets = offsets.map(Number).filter((n) => Number.isFinite(n) && n > 0);
+    if (offsets.length !== 3) return res.status(400).json({ error: "Indica 3 valores (en horas) mayores que 0." });
+    offsets.sort((a, b) => b - a);
+    const { error } = await supabase.from("df_settings")
+      .upsert({ key: "reminder_cadence", value: { offsets }, updated_at: new Date().toISOString() }, { onConflict: "key" });
+    if (error) throw error;
+    return res.json({ offsets });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// Envío MANUAL de recordatorio a una cita (el bot manda el mensaje por WhatsApp).
+app.post("/api/appointments/:id/send-reminder", requireAuth, async (req, res) => {
+  try {
+    const wa = require("./lib/whatsapp");
+    const { data: a } = await supabase
+      .from("df_appointments")
+      .select("id, starts_at, status, df_patients(full_name, phone)")
+      .eq("id", req.params.id).maybeSingle();
+    if (!a) return res.status(404).json({ error: "Cita no encontrada." });
+    const phone = a.df_patients && a.df_patients.phone;
+    if (!phone) return res.status(400).json({ error: "El paciente no tiene teléfono en su ficha." });
+    if (!wa.isConfigured()) return res.status(400).json({ error: "WhatsApp no está configurado (falta token o número de teléfono)." });
+    try {
+      await wa.sendText(phone, reminderText(a));
+    } catch (e) {
+      return res.status(502).json({ error: "No se pudo enviar por WhatsApp: " + e.message });
+    }
+    return res.json({ ok: true });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// =============================================================
+// URGENCIAS PENDIENTES (las registra el bot; recepción las gestiona)
+// =============================================================
+app.get("/api/urgencies", requireAuth, async (req, res) => {
+  try {
+    const status = req.query.status || "pending";
+    const { data, error } = await supabase
+      .from("df_urgencies")
+      .select("*, df_patients(id, full_name, phone)")
+      .eq("status", status)
+      .order("created_at", { ascending: false })
+      .limit(200);
+    if (error) throw error;
+    return res.json({ urgencies: data || [] });
+  } catch (err) {
+    console.error("[urgencies/list]", err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+app.patch("/api/urgencies/:id", requireAuth, async (req, res) => {
+  try {
+    const allowed = ["status", "appointment_id", "summary", "customer_name", "customer_phone", "patient_id"];
+    const patch = {};
+    for (const k of allowed) if (k in (req.body || {})) patch[k] = req.body[k];
+    patch.updated_at = new Date().toISOString();
+    const { data, error } = await supabase
+      .from("df_urgencies").update(patch).eq("id", req.params.id).select().single();
+    if (error) throw error;
+    return res.json({ urgency: data });
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
@@ -337,6 +1296,27 @@ app.post("/api/patients/:id/payments", requireAuth, async (req, res) => {
   }
 });
 
+// Editar un cobro: marcar pagado/pendiente, cambiar importe, concepto o notas.
+app.patch("/api/patients/:id/payments/:pid", requireAuth, async (req, res) => {
+  try {
+    const body = req.body || {};
+    const patch = {};
+    if ("amount_eur" in body) patch.amount_eur = Number(body.amount_eur) || 0;
+    if ("concept" in body) patch.concept = body.concept || null;
+    if ("notes" in body) patch.notes = body.notes || null;
+    if ("paid" in body) {
+      patch.paid = !!body.paid;
+      patch.paid_at = patch.paid ? new Date().toISOString() : null;
+    }
+    const { data, error } = await supabase
+      .from("df_patient_payments").update(patch).eq("id", req.params.pid).select().single();
+    if (error) throw error;
+    return res.json({ payment: data });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 // =============================================================
 // PROFESIONALES
 // =============================================================
@@ -344,7 +1324,7 @@ app.get("/api/professionals", requireAuth, async (_req, res) => {
   try {
     const { data, error } = await supabase
       .from("df_professionals")
-      .select("*, df_professional_schedules(*)")
+      .select("id, name, specialty, color, active, is_generalist, notes, created_at, updated_at, google_calendar_id, google_calendar_email, google_calendar_sync_enabled, google_calendar_connected_at, google_calendar_last_sync_at, google_calendar_sync_error, df_professional_schedules(*)")
       .order("name", { ascending: true });
     if (error) throw error;
     return res.json({ professionals: data });
@@ -355,10 +1335,10 @@ app.get("/api/professionals", requireAuth, async (_req, res) => {
 
 app.post("/api/professionals", requireAuth, async (req, res) => {
   try {
-    const { name, specialty, color, schedules } = req.body || {};
+    const { name, specialty, color, schedules, is_generalist } = req.body || {};
     if (!name || !specialty) return res.status(400).json({ error: "Faltan datos." });
     const { data: pro, error } = await supabase
-      .from("df_professionals").insert({ name, specialty, color: color || "#9ca3af" })
+      .from("df_professionals").insert({ name, specialty, color: color || "#9ca3af", is_generalist: !!is_generalist })
       .select().single();
     if (error) throw error;
     if (Array.isArray(schedules) && schedules.length) {
@@ -378,7 +1358,7 @@ app.post("/api/professionals", requireAuth, async (req, res) => {
 
 app.patch("/api/professionals/:id", requireAuth, async (req, res) => {
   try {
-    const allowed = ["name","specialty","color","active","notes"];
+    const allowed = ["name","specialty","color","active","notes","is_generalist"];
     const patch = {};
     for (const k of allowed) if (k in (req.body || {})) patch[k] = req.body[k];
     const { data, error } = await supabase
@@ -416,7 +1396,7 @@ app.get("/api/treatments", requireAuth, async (_req, res) => {
 
 app.post("/api/treatments", requireAuth, async (req, res) => {
   try {
-    const { name, duration_minutes, description, is_first_visit } = req.body || {};
+    const { name, duration_minutes, description, is_first_visit, price_eur } = req.body || {};
     if (!name) return res.status(400).json({ error: "Falta nombre." });
     const { data, error } = await supabase
       .from("df_treatments").insert({
@@ -424,6 +1404,7 @@ app.post("/api/treatments", requireAuth, async (req, res) => {
         duration_minutes: Number(duration_minutes) || 30,
         description: description || null,
         is_first_visit: !!is_first_visit,
+        price_eur: price_eur === "" || price_eur == null ? null : Number(price_eur),
       }).select().single();
     if (error) throw error;
     return res.json({ treatment: data });
@@ -434,9 +1415,10 @@ app.post("/api/treatments", requireAuth, async (req, res) => {
 
 app.patch("/api/treatments/:id", requireAuth, async (req, res) => {
   try {
-    const allowed = ["name","duration_minutes","description","active","is_first_visit"];
+    const allowed = ["name","duration_minutes","description","active","is_first_visit","price_eur"];
     const patch = {};
     for (const k of allowed) if (k in (req.body || {})) patch[k] = req.body[k];
+    if ("price_eur" in patch) patch.price_eur = patch.price_eur === "" || patch.price_eur == null ? null : Number(patch.price_eur);
     const { data, error } = await supabase
       .from("df_treatments").update(patch).eq("id", req.params.id).select().single();
     if (error) throw error;
@@ -505,13 +1487,15 @@ app.post("/api/conversations/:id/reply", requireAuth, async (req, res) => {
         return res.status(503).json({ error: "WhatsApp no está configurado en el servidor (falta token o phone number id)." });
       }
       try {
-        await wa.sendText(conv.customer_phone, content);
+        // Identifica que responde una persona de recepción (no el bot).
+        await wa.sendText(conv.customer_phone, withWaPrefix(WA_HUMAN_PREFIX, content));
       } catch (e) {
         // Lo más habitual: fuera de la ventana de 24 h de WhatsApp, o token caducado.
         return res.status(502).json({ error: "No se pudo entregar por WhatsApp: " + e.message });
       }
     }
 
+    // Guardamos el texto limpio (sin prefijo); en el CRM el rol ya distingue quién habló.
     const { error } = await supabase.from("df_messages")
       .insert({ conversation_id: req.params.id, role: "admin", content });
     if (error) throw error;
@@ -595,7 +1579,7 @@ app.post("/api/reviews", requireAuth, async (req, res) => {
 
 app.patch("/api/reviews/:id", requireAuth, async (req, res) => {
   try {
-    const allowed = ["status","internal_resolution"];
+    const allowed = ["status","internal_resolution","reviewed"];
     const patch = {};
     for (const k of allowed) if (k in (req.body || {})) patch[k] = req.body[k];
     const { data, error } = await supabase
@@ -623,15 +1607,41 @@ app.get("/api/campaigns", requireAuth, async (_req, res) => {
 
 app.post("/api/campaigns", requireAuth, async (req, res) => {
   try {
-    const { name, segment, segment_config, message_template, scheduled_at } = req.body || {};
-    if (!name || !segment || !message_template) return res.status(400).json({ error: "Faltan datos." });
+    const b = req.body || {};
+    const name = String(b.name || "").trim();
+
+    // Formato nuevo: segments[] (puede incluir "custom:Nombre").
+    // Compatibilidad con el formato antiguo (segment único).
+    let segments = Array.isArray(b.segments) ? b.segments.map((s) => String(s).trim()).filter(Boolean) : [];
+    if (!segments.length && b.segment) segments = [String(b.segment).trim()];
+    const templateName = String(b.template_name || b.message_template || "").trim();
+
+    if (!name) return res.status(400).json({ error: "Falta el nombre de la campaña." });
+    if (!segments.length) return res.status(400).json({ error: "Selecciona al menos un segmento." });
+
+    const STANDARD = ["por_edad", "por_tratamiento", "presupuestos_no_aceptados", "inactivos", "manual"];
+    // La columna 'segment' tiene CHECK: guardamos ahí el primer segmento estándar (o 'manual').
+    const primarySegment = segments.find((s) => STANDARD.includes(s)) || "manual";
+    const customSegments = segments.filter((s) => s.startsWith("custom:")).map((s) => s.slice(7));
+
+    const baseConfig = b.segment_config && typeof b.segment_config === "object" ? b.segment_config : {};
+    const segment_config = {
+      ...baseConfig,
+      segments,
+      treatments: Array.isArray(b.treatments) ? b.treatments : (baseConfig.treatments || []),
+      age_ranges: Array.isArray(b.age_ranges) ? b.age_ranges : (baseConfig.age_ranges || []),
+      custom_segments: customSegments,
+      template_name: templateName,
+    };
+
     const { data, error } = await supabase
       .from("df_campaigns").insert({
-        name, segment,
-        segment_config: segment_config || {},
-        message_template,
-        scheduled_at: scheduled_at || null,
-        status: scheduled_at ? "scheduled" : "draft",
+        name,
+        segment: primarySegment,
+        segment_config,
+        message_template: templateName, // columna NOT NULL: guardamos el nombre de la plantilla
+        scheduled_at: b.scheduled_at || null,
+        status: b.scheduled_at ? "scheduled" : "draft",
       }).select().single();
     if (error) throw error;
     return res.json({ campaign: data });
@@ -650,6 +1660,196 @@ app.patch("/api/campaigns/:id", requireAuth, async (req, res) => {
     if (error) throw error;
     return res.json({ campaign: data });
   } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// Diagnóstico de la conexión con Meta (usa las MISMAS variables que el CRM).
+// Sirve para saber si el problema al crear plantillas está en Vercel o en Meta.
+app.get("/api/marketing/diagnose", requireAuth, async (_req, res) => {
+  const wabaId = process.env.WHATSAPP_BUSINESS_ACCOUNT_ID || process.env.WABA_ID || "";
+  const token = process.env.WHATSAPP_TOKEN || "";
+  const mask = (t) => (t ? `${t.slice(0, 6)}…${t.slice(-4)} (${t.length} caracteres)` : null);
+  const report = {
+    env: {
+      waba_id_set: !!wabaId,
+      waba_id: wabaId || null,
+      token_set: !!token,
+      token_preview: mask(token),
+      phone_number_id_set: !!process.env.WHATSAPP_PHONE_NUMBER_ID,
+      graph_version: META_GRAPH_VERSION,
+    },
+    checks: {},
+    ok: false,
+    conclusion: "",
+  };
+
+  if (!wabaId || !token) {
+    report.conclusion = "Faltan WHATSAPP_BUSINESS_ACCOUNT_ID o WHATSAPP_TOKEN en Vercel. Añádelos y haz Redeploy.";
+    return res.json(report);
+  }
+
+  // 1) ¿El token puede LEER la WABA configurada? (y en qué estado está)
+  try {
+    const r = await fetch(`${META_GRAPH_BASE}/${wabaId}?fields=name,id,account_review_status,business_verification_status`, { headers: { Authorization: `Bearer ${token}` } });
+    const d = await r.json().catch(() => ({}));
+    report.checks.leer_waba = r.ok
+      ? { ok: true, nombre: d.name || null, review: d.account_review_status || null, verificacion: d.business_verification_status || null }
+      : { ok: false, error: d?.error?.message || `HTTP ${r.status}`, code: d?.error?.code };
+  } catch (e) { report.checks.leer_waba = { ok: false, error: e.message }; }
+
+  // 2) ¿El token puede LISTAR plantillas de esa WABA? (mismo permiso que crearlas)
+  try {
+    const r = await fetch(`${META_GRAPH_BASE}/${wabaId}/message_templates?limit=1`, { headers: { Authorization: `Bearer ${token}` } });
+    const d = await r.json().catch(() => ({}));
+    report.checks.listar_plantillas = r.ok
+      ? { ok: true, total_muestra: (d.data || []).length }
+      : { ok: false, error: d?.error?.message || `HTTP ${r.status}`, code: d?.error?.code };
+  } catch (e) { report.checks.listar_plantillas = { ok: false, error: e.message }; }
+
+  // 3) Prueba REAL de creación: crea una plantilla de prueba y la borra.
+  //    Es la única forma fiable de saber si el permiso de ESCRITURA funciona.
+  try {
+    const testName = "crm_diagnostico_" + Date.now();
+    const payload = {
+      name: testName, category: "UTILITY", language: "es_ES",
+      components: [{ type: "BODY", text: "Prueba de diagnostico del CRM. Se elimina automaticamente." }],
+    };
+    const r = await fetch(`${META_GRAPH_BASE}/${wabaId}/message_templates`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (r.ok) {
+      report.checks.crear_plantilla = { ok: true, nota: "Creación permitida (plantilla de prueba eliminada)." };
+      // limpiar la plantilla de prueba
+      await fetch(`${META_GRAPH_BASE}/${wabaId}/message_templates?name=${encodeURIComponent(testName)}`, {
+        method: "DELETE", headers: { Authorization: `Bearer ${token}` },
+      }).catch(() => {});
+    } else {
+      const e = d?.error || {};
+      report.checks.crear_plantilla = {
+        ok: false,
+        error: e.error_user_msg || e.message || `HTTP ${r.status}`,
+        code: e.code, subcode: e.error_subcode,
+      };
+    }
+  } catch (e) { report.checks.crear_plantilla = { ok: false, error: e.message }; }
+
+  const cr = report.checks.crear_plantilla;
+  report.ok = !!(cr && cr.ok);
+  if (cr && cr.ok) {
+    report.conclusion = "¡Todo correcto! El CRM puede crear plantillas en Meta. Ya puedes usar 'Crear plantilla'.";
+  } else if (!report.checks.leer_waba?.ok || !report.checks.listar_plantillas?.ok) {
+    report.conclusion = "El token o la WABA de Vercel no pueden gestionar esa cuenta. Revisa que WHATSAPP_TOKEN y WHATSAPP_BUSINESS_ACCOUNT_ID en Vercel sean exactamente los que funcionan, y haz Redeploy.";
+  } else {
+    const review = report.checks.leer_waba?.review;
+    let extra = "";
+    if (review && review !== "APPROVED") {
+      extra = ` OJO: la revisión de la cuenta (account_review_status) está en "${review}", no en "APPROVED". Mientras no esté APPROVED, Meta bloquea crear plantillas. Suele aprobarse sola en unas horas; si no, revisa que el número esté verificado y con método de pago activo.`;
+    }
+    report.conclusion = "El token puede LEER pero NO CREAR plantillas. Prueba, en este orden: (1) regenerar el token del usuario del sistema (con rol Administrador) y actualizarlo en Vercel, (2) app en modo 'En vivo', (3) 'Acceso avanzado' del permiso whatsapp_business_management." + extra;
+  }
+  return res.json(report);
+});
+
+// Listar las plantillas creadas en Meta (para el desplegable de campañas).
+app.get("/api/marketing/templates", requireAuth, async (_req, res) => {
+  try {
+    const wabaId = process.env.WHATSAPP_BUSINESS_ACCOUNT_ID || process.env.WABA_ID || "";
+    const token = process.env.WHATSAPP_TOKEN || "";
+    if (!wabaId || !token) return res.json({ templates: [], configured: false });
+
+    const url = `${META_GRAPH_BASE}/${wabaId}/message_templates?limit=200&fields=name,status,category,language`;
+    const metaRes = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+    const metaData = await metaRes.json().catch(() => ({}));
+    if (!metaRes.ok) {
+      const detail = metaData?.error?.error_user_msg || metaData?.error?.message || `Meta Graph ${metaRes.status}`;
+      return res.status(502).json({ error: detail, templates: [], configured: true });
+    }
+    return res.json({ templates: metaData.data || [], configured: true });
+  } catch (err) {
+    return res.status(500).json({ error: err.message, templates: [] });
+  }
+});
+
+// Crear plantillas de WhatsApp en Meta desde el apartado Marketing.
+app.post("/api/marketing/templates", requireAuth, async (req, res) => {
+  try {
+    const wabaId = process.env.WHATSAPP_BUSINESS_ACCOUNT_ID || process.env.WABA_ID || "";
+    const token = process.env.WHATSAPP_TOKEN || "";
+    if (!wabaId || !token) {
+      return res.status(500).json({
+        error: "Faltan WHATSAPP_BUSINESS_ACCOUNT_ID o WHATSAPP_TOKEN en las variables de entorno.",
+      });
+    }
+
+    const name = normalizeMetaTemplateName(req.body?.name);
+    const category = String(req.body?.category || "MARKETING").trim().toUpperCase();
+    const language = String(req.body?.language || "es_ES").trim();
+    const headerText = String(req.body?.header_text || "").trim();
+    const bodyText = String(req.body?.body_text || "").trim();
+    const footerText = String(req.body?.footer_text || "").trim();
+    const bodyExamples = parseExampleValues(req.body?.body_examples);
+    const headerExamples = parseExampleValues(req.body?.header_examples);
+
+    if (!name) return res.status(400).json({ error: "Falta el nombre de la plantilla." });
+    if (!["MARKETING", "UTILITY", "AUTHENTICATION"].includes(category)) {
+      return res.status(400).json({ error: "Categoría de plantilla no válida." });
+    }
+    if (!language) return res.status(400).json({ error: "Falta el idioma de la plantilla." });
+    if (!bodyText) return res.status(400).json({ error: "Falta el texto principal de la plantilla." });
+    if (bodyText.length > 1024) return res.status(400).json({ error: "El texto principal supera 1024 caracteres." });
+    if (headerText.length > 60) return res.status(400).json({ error: "El encabezado supera 60 caracteres." });
+    if (footerText.length > 60) return res.status(400).json({ error: "El pie supera 60 caracteres." });
+    if (hasNamedTemplateVars(headerText) || hasNamedTemplateVars(bodyText) || hasNamedTemplateVars(footerText)) {
+      return res.status(400).json({
+        error: "Meta solo acepta variables numeradas como {{1}}, {{2}}. No uses {{nombre}} en plantillas de Meta.",
+      });
+    }
+
+    const components = [];
+    if (headerText) {
+      const header = { type: "HEADER", format: "TEXT", text: headerText };
+      addTextExamples(header, headerExamples.length ? headerExamples : bodyExamples, "header_text");
+      components.push(header);
+    }
+
+    const body = { type: "BODY", text: bodyText };
+    addTextExamples(body, bodyExamples, "body_text");
+    components.push(body);
+
+    if (footerText) components.push({ type: "FOOTER", text: footerText });
+
+    const payload = {
+      name,
+      category,
+      language,
+      allow_category_change: req.body?.allow_category_change !== false,
+      components,
+    };
+
+    const metaRes = await fetch(`${META_GRAPH_BASE}/${wabaId}/message_templates`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+    const metaData = await metaRes.json().catch(() => ({}));
+    if (!metaRes.ok) {
+      const detail = metaData?.error?.error_user_msg || metaData?.error?.message || `Meta Graph ${metaRes.status}`;
+      return res.status(502).json({ error: detail, meta: metaData });
+    }
+
+    return res.json({
+      template: metaData,
+      submitted: { name, category, language },
+    });
+  } catch (err) {
+    console.error("[marketing/template]", err);
     return res.status(500).json({ error: err.message });
   }
 });
@@ -719,7 +1919,8 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
       }
       const result = await handleMessage({ channel: "whatsapp", phone: m.from, name: m.name, text: m.text });
       if (result.reply) {
-        await wa.sendText(m.from, result.reply).catch((e) => console.error("[wa send]", e.message));
+        // Identifica que responde el asistente automático.
+        await wa.sendText(m.from, withWaPrefix(WA_BOT_PREFIX, result.reply)).catch((e) => console.error("[wa send]", e.message));
       }
     }
   } catch (err) {
