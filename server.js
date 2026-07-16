@@ -21,7 +21,7 @@ const META_GRAPH_VERSION = process.env.META_GRAPH_VERSION || "v21.0";
 // Identificadores en WhatsApp para que el paciente distinga quién le escribe:
 // el asistente automático o una persona de recepción. Para cambiar el texto edita
 // aquí; para no mostrar un prefijo, define la env var correspondiente a "".
-const WA_BOT_PREFIX = process.env.WA_BOT_PREFIX ?? "🤖 Asistente virtual";
+const WA_BOT_PREFIX = process.env.WA_BOT_PREFIX ?? "Asistente virtual";
 const WA_HUMAN_PREFIX = process.env.WA_HUMAN_PREFIX ?? "👩‍⚕️ Recepción Dental Fortes";
 // Antepone el identificador (en negrita) y un salto de línea al cuerpo del mensaje.
 function withWaPrefix(prefix, body) {

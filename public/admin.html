@@ -1669,7 +1669,7 @@ async function renderConversationDetail(id) {
           ${(conv.messages||[]).map(m => `
             <div style="display:flex;${m.role==="user"?"justify-content:flex-start":"justify-content:flex-end"};margin-bottom:8px">
               <div style="background:${m.role==="admin"?"var(--accent)":m.role==="assistant"?"var(--bg-2)":"var(--bg-4)"};color:${m.role==="admin"?"#1a1a1a":"var(--text)"};padding:9px 12px;border-radius:10px;max-width:70%;font-size:13.5px">
-                <div style="font-size:10px;font-weight:700;letter-spacing:.02em;margin-bottom:3px;opacity:0.85">${m.role==="user"?"Paciente":m.role==="assistant"?"🤖 Bot":"👩‍⚕️ Recepción"}</div>
+                <div style="font-size:10px;font-weight:700;letter-spacing:.02em;margin-bottom:3px;opacity:0.85">${m.role==="user"?"Paciente":m.role==="assistant"?"Asistente virtual":"👩‍⚕️ Recepción"}</div>
                 ${escapeHtml(m.content)}
                 <div style="font-size:10px;opacity:0.6;margin-top:3px">${fmtDateTime(m.created_at)}</div>
               </div>
