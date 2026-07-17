@@ -69,7 +69,7 @@ body {
 button, input, select, textarea { font-family: inherit; font-size: inherit; }
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
-.disp, .page-header h2, .kpi .val, .modal h3 {
+.disp, .page-header h2, .section-title, .kpi .val, .modal h3 {
   font-family: 'Space Grotesk', 'Manrope', sans-serif;
   font-feature-settings: 'tnum';
 }
@@ -164,6 +164,8 @@ a:hover { text-decoration: underline; }
 .page-header { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 22px; flex-wrap: wrap; gap: 12px;
   animation: fadeUp .5s var(--ease) both; }
 .page-header h2 { margin: 0; font-size: 26px; font-weight: 600; letter-spacing: -.6px; color: var(--text); }
+/* Título de sección (mismo estilo que "Dashboard" pero algo más pequeño) */
+.section-title { margin: 0 0 12px; font-size: 19px; font-weight: 600; letter-spacing: -.4px; color: var(--text); }
 .page-header .actions { display: flex; gap: 10px; }
 
 /* ===== BOTONES ===== */
@@ -392,16 +394,24 @@ table td, .agenda-grid .hour { font-variant-numeric: tabular-nums; }
 .bars .bar:hover { filter:brightness(1.05); }
 .bars .bval { font-size:11px; color:var(--text-2); font-weight:700; height:14px; }
 .bars .blbl { font-size:11px; color:var(--text-3); text-transform:capitalize; }
+/* Barras que rellenan verticalmente toda la caja de su apartado (nº de citas por tratamiento) */
+#trtBarsBox { display:flex; flex-direction:column; }
+#trtBarsBox .bars.bars-fill { flex:1 1 auto; height:auto; min-height:230px; }
 
 /* Profesionales */
-.prof-row { display:grid; grid-template-columns:1.4fr auto auto 1fr; align-items:center; gap:14px; padding:10px 0; border-bottom:1px solid var(--line); }
+.prof-row { display:grid; grid-template-columns:1.6fr 1fr 1.3fr 1fr; align-items:center; gap:14px; padding:11px 0; border-bottom:1px solid var(--line); }
 .prof-row:last-child { border-bottom:none; }
+.prof-head { padding:0 0 10px; border-bottom:1px solid var(--line-2); }
+.prof-head > div { font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.4px; color:var(--text-3); }
+.prof-col-c { text-align:center; }
+.prof-col-r { text-align:right; }
 .prof-name { font-weight:700; color:var(--text); }
 .prof-citas { font-size:12px; color:var(--text-3); }
-.prof-bar-wrap { height:8px; background:var(--bg-4); border-radius:999px; overflow:hidden; }
-.prof-bar { height:100%; width:0; border-radius:999px; background:linear-gradient(90deg,var(--accent-2),var(--teal)); transition:width 1s var(--ease); }
+.prof-occ { font-size:13.5px; font-weight:700; color:var(--accent); text-align:center; white-space:nowrap; }
+.prof-rating { display:flex; align-items:center; justify-content:center; gap:8px; }
+.prof-rating-val { font-size:13px; font-weight:700; color:var(--text-2); }
+.prof-rating-empty { font-size:12px; color:var(--text-3); }
 .prof-fact { text-align:right; font-weight:700; font-size:13px; white-space:nowrap; color:var(--text); }
-.prof-attended { font-size:12px; font-weight:700; color:var(--teal); white-space:nowrap; text-align:right; }
 .trt-pros { display:flex; flex-wrap:wrap; gap:8px 16px; border:1px solid var(--line-2); border-radius:10px; padding:11px 13px; max-height:150px; overflow-y:auto; background:#fff; }
 .trt-pro-chk { display:flex; align-items:center; gap:7px; font-size:13px; color:var(--text-2); cursor:pointer; }
 .trt-pro-chk input { width:15px; height:15px; accent-color:var(--silver); cursor:pointer; }
@@ -738,10 +748,12 @@ let dashState = { period: '6m', treatment_id: '', professional_id: '', age_min: 
 let trtMetricsState = { period: '6m' };
 
 function periodRange(period) {
+  // Rango alineado a MESES NATURALES para que el nº de barras coincida con el periodo
+  // (p. ej. "últimos 3 meses" => exactamente 3 meses/barras, sin meses de relleno).
   const now = new Date();
   if (period === 'month') return { from: new Date(now.getFullYear(), now.getMonth(), 1) };
-  if (period === '3m') return { from: new Date(now.getFullYear(), now.getMonth() - 3, now.getDate()) };
-  if (period === '6m') return { from: new Date(now.getFullYear(), now.getMonth() - 6, now.getDate()) };
+  if (period === '3m') return { from: new Date(now.getFullYear(), now.getMonth() - 2, 1) };
+  if (period === '6m') return { from: new Date(now.getFullYear(), now.getMonth() - 5, 1) };
   if (period === 'year') return { from: new Date(now.getFullYear(), 0, 1) };
   return {}; // 'all'
 }
@@ -757,8 +769,8 @@ async function renderDashboard() {
         .map((k,i)=>`<div class="card kpi fade-up d${(i%4)+1}"><div class="val">…</div><div class="lbl">${k[0]}</div></div>`).join("")}
     </div>
     <div style="height:16px"></div>
+    <h2 class="section-title">Facturación</h2>
     <div class="card fade-up d1">
-      <h3>Facturación</h3>
       <div class="dash-filters" id="dashFilters">
         <div class="field"><label>Periodo</label>
           <select class="select" id="fPeriod">
@@ -791,7 +803,7 @@ async function renderDashboard() {
     <div style="height:16px"></div>
     <div class="grid grid-2">
       <div class="card fade-up d2"><h3>Facturación por tratamiento</h3><div id="donutBox"><div class="empty-state">Cargando…</div></div></div>
-      <div class="card fade-up d3"><h3>Facturación · últimos 6 meses</h3><div id="barsBox"><div class="empty-state">Cargando…</div></div></div>
+      <div class="card fade-up d3"><h3 id="billingBarsTitle">Facturación · últimos 6 meses</h3><div id="barsBox"><div class="empty-state">Cargando…</div></div></div>
     </div>
     <div style="height:16px"></div>
     <div class="card fade-up d4"><h3>Estadísticas por profesional</h3><div id="profBox"><div class="empty-state">Cargando…</div></div></div>
@@ -877,9 +889,14 @@ async function loadDashboardBilling() {
     if (!cards[4].querySelector(".sub")) cards[4].insertAdjacentHTML("beforeend", `<div class="sub">${b.numPendientes} pendiente(s)</div>`);
     else cards[4].querySelector(".sub").textContent = `${b.numPendientes} pendiente(s)`;
 
+    // El título del gráfico de barras refleja el periodo elegido arriba.
+    const PERIOD_TITLE = { month: "este mes", "3m": "últimos 3 meses", "6m": "últimos 6 meses", year: "este año", all: "todo el histórico" };
+    const barsTitle = document.getElementById("billingBarsTitle");
+    if (barsTitle) barsTitle.textContent = "Facturación · " + (PERIOD_TITLE[dashState.period] || "últimos 6 meses");
+
     renderDonut(b.byTreatment, b.totalFacturado);
     renderBars(b.byMonth);
-    renderProf(b.byProfessional);
+    renderProf(b.byProfessional, b.review);
   } catch (err) { toast(err.message, "error"); }
 }
 
@@ -926,23 +943,33 @@ function renderBars(months) {
   requestAnimationFrame(() => box.querySelectorAll(".bar").forEach(el => { el.style.height = el.dataset.h + "%"; }));
 }
 
-function renderProf(rows) {
+function renderProf(rows, review) {
   const box = document.getElementById("profBox"); if (!box) return;
   const data = rows || [];
   if (!data.length) { box.innerHTML = `<div class="empty-state" style="padding:20px">Sin datos por profesional en este periodo.</div>`; return; }
-  const max = Math.max(1, ...data.map(p => p.facturado));
-  box.innerHTML = data.map((p, i) => {
-    // % de citas atendidas = atendidas / (atendidas + no asistidas). "—" si aún no hay citas cerradas.
-    const fin = (p.atendidas || 0) + (p.no_asistidas || 0);
-    const pct = fin > 0 ? Math.round((p.atendidas / fin) * 100) : null;
+  // % de ocupación = citas de ese profesional / total de citas del periodo.
+  const totalCitas = data.reduce((s, p) => s + (p.citas || 0), 0);
+  // Valoración media del cliente: media de TODAS las reseñas del periodo. Las reseñas no van
+  // asociadas a un profesional concreto, así que es la media de la clínica (igual en cada fila).
+  const avg = review && review.avg != null ? review.avg : null;
+  const ratingCell = avg != null
+    ? `${starRow(avg)}<span class="prof-rating-val">${avg.toFixed(1)}</span>`
+    : `<span class="prof-rating-empty">Sin valoraciones</span>`;
+  const header = `<div class="prof-row prof-head">
+    <div>Empleado</div>
+    <div class="prof-col-c">% de ocupación</div>
+    <div class="prof-col-c">Valoración de cliente</div>
+    <div class="prof-col-r">Facturado</div>
+  </div>`;
+  box.innerHTML = header + data.map((p) => {
+    const pct = totalCitas > 0 ? (p.citas / totalCitas) * 100 : 0;
     return `<div class="prof-row">
       <div><div class="prof-name">${escapeHtml(p.name)}</div><div class="prof-citas">${p.citas} cita(s)</div></div>
-      <div class="prof-attended" title="Citas atendidas sobre las ya finalizadas">${pct != null ? pct + "% atendidas" : "— atendidas"}</div>
-      <div class="prof-bar-wrap" style="width:110px"><div class="prof-bar" data-w="${Math.round((p.facturado / max) * 100)}"></div></div>
+      <div class="prof-occ" title="Citas de este profesional sobre el total de citas del periodo">${pct.toFixed(1)}%</div>
+      <div class="prof-rating">${ratingCell}</div>
       <div class="prof-fact">${fmtEur(p.facturado)}</div>
     </div>`;
   }).join("");
-  requestAnimationFrame(() => box.querySelectorAll(".prof-bar").forEach(el => { el.style.width = el.dataset.w + "%"; }));
 }
 
 async function loadTreatmentMetrics() {
@@ -990,7 +1017,7 @@ function renderTreatmentBars(rowsIn) {
   const rows = (rowsIn || []).filter(s => s.citas > 0);
   if (!rows.length) { box.innerHTML = `<h3 style="margin:0 0 12px">Nº de citas por tratamiento</h3><div class="empty-state" style="padding:24px">Sin citas en este periodo.</div>`; return; }
   const max = Math.max(1, ...rows.map(r => r.citas));
-  box.innerHTML = `<h3 style="margin:0 0 12px">Nº de citas por tratamiento</h3><div class="bars">
+  box.innerHTML = `<h3 style="margin:0 0 12px">Nº de citas por tratamiento</h3><div class="bars bars-fill">
     ${rows.map((r, i) => `<div class="col">
       <div class="bval">${r.citas}</div>
       <div class="bar" style="background:${CHART_COLORS[i % CHART_COLORS.length]}" data-h="${Math.max(6, Math.round((r.citas / max) * 100))}" title="${escapeHtml(r.name)}: ${r.citas} cita(s)"></div>

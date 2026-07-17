@@ -479,11 +479,12 @@ app.get("/api/dashboard/billing", requireAuth, async (req, res) => {
     const fromT = from ? Date.parse(from) : null;
     const toT = to ? Date.parse(to) : null;
 
-    const [{ data: appts }, { data: pays }] = await Promise.all([
+    const [{ data: appts }, { data: pays }, { data: reviewsData }] = await Promise.all([
       supabase.from("df_appointments")
         .select("id, starts_at, status, treatment_id, professional_id, df_professionals(name), df_treatments(name), df_patients(birth_date)"),
       supabase.from("df_patient_payments")
         .select("amount_eur, paid, paid_at, created_at, appointment_id, df_patients(birth_date)"),
+      supabase.from("df_reviews").select("rating, created_at"),
     ]);
     const apptMap = Object.fromEntries((appts || []).map((a) => [a.id, a]));
 
@@ -555,13 +556,45 @@ app.get("/api/dashboard/billing", requireAuth, async (req, res) => {
       else if (a.status === "no_show") oc.noShow++;
     }
 
-    // Últimos 6 meses (relleno de meses vacíos)
+    // Meses a mostrar: uno por mes NATURAL dentro del rango pedido, así el nº de barras
+    // coincide con el periodo (3 meses => 3 barras) sin meses de relleno de más. Para "Todo"
+    // (sin fecha desde) se arranca en el primer mes con datos.
+    const firstDataKey = Object.keys(byMonth).sort()[0];
+    const startBase = fromT
+      ? new Date(fromT)
+      : (firstDataKey ? new Date(firstDataKey + "-01T00:00:00") : new Date(now.getFullYear(), now.getMonth(), 1));
+    const endBase = toT ? new Date(toT) : now;
+    let cursor = new Date(startBase.getFullYear(), startBase.getMonth(), 1);
+    const endMonth = new Date(endBase.getFullYear(), endBase.getMonth(), 1);
     const meses = [];
-    for (let i = 5; i >= 0; i--) {
-      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-      meses.push({ key: d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0"), label: d.toLocaleDateString("es-ES", { month: "short" }) });
+    let guardM = 0;
+    while (cursor <= endMonth && guardM < 120) {
+      meses.push({ key: cursor.getFullYear() + "-" + String(cursor.getMonth() + 1).padStart(2, "0"), y: cursor.getFullYear() });
+      cursor = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1);
+      guardM++;
     }
-    const byMonthArr = meses.map((m) => ({ month: m.key, label: m.label, amount: round2(byMonth[m.key] || 0) }));
+    if (!meses.length) meses.push({ key: now.getFullYear() + "-" + String(now.getMonth() + 1).padStart(2, "0"), y: now.getFullYear() });
+    // Si el rango cruza varios años, añadimos el año a la etiqueta para no confundir meses.
+    const multiYear = meses[0].y !== meses[meses.length - 1].y;
+    const byMonthArr = meses.map((m) => {
+      const d = new Date(m.key + "-01T00:00:00");
+      let label = d.toLocaleDateString("es-ES", { month: "short" });
+      if (multiYear) label += " " + String(m.y).slice(-2);
+      return { month: m.key, label, amount: round2(byMonth[m.key] || 0) };
+    });
+
+    // Valoración media de cliente: media de TODAS las reseñas del periodo (a nivel de clínica;
+    // las reseñas no van asociadas a un profesional concreto). Se muestra en estadísticas.
+    let ratingSum = 0, ratingCount = 0;
+    for (const rv of reviewsData || []) {
+      const rt = Date.parse(rv.created_at);
+      if (fromT && rt < fromT) continue;
+      if (toT && rt > toT) continue;
+      const val = Number(rv.rating);
+      if (!isFinite(val)) continue;
+      ratingSum += val; ratingCount++;
+    }
+    const review = { avg: ratingCount ? round2(ratingSum / ratingCount) : null, count: ratingCount };
     const byTreatmentArr = Object.entries(byTreatment).map(([name, amount]) => ({ name, amount: round2(amount) })).sort((a, b) => b.amount - a.amount);
     const profNames = new Set([...Object.keys(byProfCitas), ...Object.keys(byProfFacturado)]);
     const byProfessional = [...profNames]
@@ -590,6 +623,7 @@ app.get("/api/dashboard/billing", requireAuth, async (req, res) => {
       byTreatmentCitas: byTreatmentCitasArr,
       byMonth: byMonthArr,
       byProfessional,
+      review,
     });
   } catch (err) {
     console.error("[billing]", err);
