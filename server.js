@@ -598,6 +598,61 @@ app.get("/api/dashboard/billing", requireAuth, async (req, res) => {
 });
 
 // =============================================================
+// NOTIFICACIONES — eventos recientes del CRM (para el panel de la campana)
+// =============================================================
+app.get("/api/notifications", requireAuth, async (_req, res) => {
+  try {
+    const LIM = 20;
+    const [appts, reviews, msgs] = await Promise.all([
+      supabase.from("df_appointments")
+        .select("id, created_at, confirmed_at, reminder_3d_at, reminder_1d_at, reminder_6h_at, starts_at, status, source, df_patients(full_name), df_treatments(name)")
+        .order("created_at", { ascending: false }).limit(60),
+      supabase.from("df_reviews")
+        .select("id, created_at, rating, comment, routed_to").order("created_at", { ascending: false }).limit(LIM),
+      supabase.from("df_messages")
+        .select("id, created_at, content, df_conversations(customer_name, channel)")
+        .eq("role", "user").order("created_at", { ascending: false }).limit(LIM),
+    ]);
+    const events = [];
+    const fmtWhen = (s) => { try { return new Date(s).toLocaleString("es-ES", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit", timeZone: "Europe/Madrid" }); } catch (_e) { return ""; } };
+    const REM = { reminder_3d_at: "3 días", reminder_1d_at: "1 día", reminder_6h_at: "6 horas" };
+
+    for (const a of appts.data || []) {
+      const paciente = a.df_patients?.full_name || "Paciente";
+      const trat = a.df_treatments?.name || "cita";
+      if (a.created_at) {
+        events.push({ id: `appt:${a.id}`, type: "cita", at: a.created_at,
+          text: `Nueva cita — ${paciente} · ${trat} · ${fmtWhen(a.starts_at)}` });
+      }
+      if (a.confirmed_at) {
+        events.push({ id: `conf:${a.id}`, type: "confirmada", at: a.confirmed_at,
+          text: `Cita confirmada — ${paciente} · ${fmtWhen(a.starts_at)}` });
+      }
+      for (const f of Object.keys(REM)) {
+        if (a[f]) events.push({ id: `rem:${a.id}:${f}`, type: "recordatorio", at: a[f],
+          text: `Recordatorio (${REM[f]}) enviado — ${paciente}` });
+      }
+    }
+    for (const r of reviews.data || []) {
+      const stars = r.rating != null ? `${r.rating}★` : "";
+      events.push({ id: `rev:${r.id}`, type: "resena", at: r.created_at,
+        text: `Nueva reseña ${stars}${r.comment ? " — " + String(r.comment).slice(0, 60) : ""}`.trim() });
+    }
+    for (const m of msgs.data || []) {
+      const quien = m.df_conversations?.customer_name || "Cliente";
+      events.push({ id: `msg:${m.id}`, type: "mensaje", at: m.created_at,
+        text: `Mensaje de ${quien} — ${String(m.content || "").slice(0, 60)}` });
+    }
+
+    events.sort((x, y) => Date.parse(y.at) - Date.parse(x.at));
+    return res.json({ notifications: events.slice(0, 40) });
+  } catch (err) {
+    console.error("[notifications]", err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// =============================================================
 // AGENDA / CITAS
 // =============================================================
 app.get("/api/appointments", requireAuth, async (req, res) => {
