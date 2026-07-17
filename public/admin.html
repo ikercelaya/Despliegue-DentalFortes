@@ -219,7 +219,7 @@ table tr.row-click { cursor: pointer; }
 .agenda-header { position: relative; }
 .agenda-header .week-nav { position: absolute; left: 50%; transform: translateX(-50%);
   display: flex; align-items: center; gap: 8px; }
-.agenda-header .week-nav #thisWeek { min-width: 132px; font-weight: 600; }
+.agenda-header .week-nav #thisWeek { min-width: 168px; font-weight: 700; text-align: center; justify-content: center; letter-spacing: .3px; }
 .agenda-grid { display: grid; grid-template-columns: 60px repeat(var(--cols,5),1fr); gap: 1px;
   background: var(--line); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; box-shadow: var(--shadow-md); }
 .agenda-grid .head { background: #FBFBFD; padding: 8px 6px; text-align: center; font-size: 12px; font-weight: 700; color: var(--text-2); }
@@ -371,13 +371,17 @@ table td, .agenda-grid .hour { font-variant-numeric: tabular-nums; }
 .bars .blbl { font-size:11px; color:var(--text-3); text-transform:capitalize; }
 
 /* Profesionales */
-.prof-row { display:grid; grid-template-columns:1.4fr auto 1fr; align-items:center; gap:12px; padding:10px 0; border-bottom:1px solid var(--line); }
+.prof-row { display:grid; grid-template-columns:1.4fr auto auto 1fr; align-items:center; gap:14px; padding:10px 0; border-bottom:1px solid var(--line); }
 .prof-row:last-child { border-bottom:none; }
 .prof-name { font-weight:700; color:var(--text); }
 .prof-citas { font-size:12px; color:var(--text-3); }
 .prof-bar-wrap { height:8px; background:var(--bg-4); border-radius:999px; overflow:hidden; }
 .prof-bar { height:100%; width:0; border-radius:999px; background:linear-gradient(90deg,var(--accent-2),var(--teal)); transition:width 1s var(--ease); }
 .prof-fact { text-align:right; font-weight:700; font-size:13px; white-space:nowrap; color:var(--text); }
+.prof-attended { font-size:12px; font-weight:700; color:var(--teal); white-space:nowrap; text-align:right; }
+.trt-pros { display:flex; flex-wrap:wrap; gap:8px 16px; border:1px solid var(--line-2); border-radius:10px; padding:11px 13px; max-height:150px; overflow-y:auto; background:#fff; }
+.trt-pro-chk { display:flex; align-items:center; gap:7px; font-size:13px; color:var(--text-2); cursor:pointer; }
+.trt-pro-chk input { width:15px; height:15px; accent-color:var(--silver); cursor:pointer; }
 
   </style>
 </head>
@@ -619,6 +623,7 @@ document.getElementById("sbNav").addEventListener("click", (e) => {
 // ====================================================================
 const CHART_COLORS = ['#557AC6','#3EC7A0','#8ECAE6','#9B8CE0','#6C8FD6','#2FB08C','#C8871F','#D65B77','#5AA9E6','#46C9A0','#A9B4CC','#7EA0DD'];
 let dashState = { period: '6m', treatment_id: '', professional_id: '', age_min: '', age_max: '' };
+let trtMetricsState = { period: '6m' };
 
 function periodRange(period) {
   const now = new Date();
@@ -677,7 +682,27 @@ async function renderDashboard() {
       <div class="card fade-up d3"><h3>Facturación · últimos 6 meses</h3><div id="barsBox"><div class="empty-state">Cargando…</div></div></div>
     </div>
     <div style="height:16px"></div>
-    <div class="card fade-up d4"><h3>Por profesional</h3><div id="profBox"><div class="empty-state">Cargando…</div></div></div>
+    <div class="card fade-up d4"><h3>Estadísticas por profesional</h3><div id="profBox"><div class="empty-state">Cargando…</div></div></div>
+    <div style="height:16px"></div>
+    <div class="card fade-up">
+      <div class="row-flex" style="justify-content:space-between;align-items:flex-end;flex-wrap:wrap;gap:12px;margin-bottom:10px">
+        <h3 style="margin:0">Métricas por tratamiento</h3>
+        <div class="field" style="display:flex;flex-direction:column;gap:5px">
+          <label style="font-size:11px;color:var(--text-3);text-transform:uppercase;letter-spacing:.5px;font-weight:700">Periodo</label>
+          <select class="select" id="trtPeriod" style="min-width:170px">
+            <option value="month">Este mes</option>
+            <option value="3m">Últimos 3 meses</option>
+            <option value="6m">Últimos 6 meses</option>
+            <option value="year">Este año</option>
+            <option value="all">Todo</option>
+          </select>
+        </div>
+      </div>
+      <div class="grid grid-2">
+        <div id="trtDonutBox"><div class="empty-state">Cargando…</div></div>
+        <div id="trtBarsBox"><div class="empty-state">Cargando…</div></div>
+      </div>
+    </div>
     <div style="height:16px"></div>
     <div class="card">
       <h3>Próximas citas</h3>
@@ -701,6 +726,10 @@ async function renderDashboard() {
   fp.onchange = ft.onchange = fpr.onchange = onFilter;
   let ageTimer; const onAge = () => { clearTimeout(ageTimer); ageTimer = setTimeout(onFilter, 400); };
   fmin.oninput = fmax.oninput = onAge;
+
+  // Métricas por tratamiento (selector de periodo independiente)
+  const tp = document.getElementById("trtPeriod");
+  if (tp) { tp.value = trtMetricsState.period; tp.onchange = () => { trtMetricsState.period = tp.value; loadTreatmentMetrics(); }; }
 
   try {
     const stats = await api("/api/dashboard/stats");
@@ -731,6 +760,7 @@ async function renderDashboard() {
   } catch (err) { toast(err.message, "error"); }
 
   loadDashboardBilling();
+  loadTreatmentMetrics();
 }
 
 async function loadDashboardBilling() {
@@ -808,12 +838,73 @@ function renderProf(rows) {
   const data = rows || [];
   if (!data.length) { box.innerHTML = `<div class="empty-state" style="padding:20px">Sin datos por profesional en este periodo.</div>`; return; }
   const max = Math.max(1, ...data.map(p => p.facturado));
-  box.innerHTML = data.map((p, i) => `<div class="prof-row">
+  box.innerHTML = data.map((p, i) => {
+    // % de citas atendidas = atendidas / (atendidas + no asistidas). "—" si aún no hay citas cerradas.
+    const fin = (p.atendidas || 0) + (p.no_asistidas || 0);
+    const pct = fin > 0 ? Math.round((p.atendidas / fin) * 100) : null;
+    return `<div class="prof-row">
       <div><div class="prof-name">${escapeHtml(p.name)}</div><div class="prof-citas">${p.citas} cita(s)</div></div>
-      <div class="prof-bar-wrap" style="width:120px"><div class="prof-bar" data-w="${Math.round((p.facturado / max) * 100)}"></div></div>
+      <div class="prof-attended" title="Citas atendidas sobre las ya finalizadas">${pct != null ? pct + "% atendidas" : "— atendidas"}</div>
+      <div class="prof-bar-wrap" style="width:110px"><div class="prof-bar" data-w="${Math.round((p.facturado / max) * 100)}"></div></div>
       <div class="prof-fact">${fmtEur(p.facturado)}</div>
-    </div>`).join("");
+    </div>`;
+  }).join("");
   requestAnimationFrame(() => box.querySelectorAll(".prof-bar").forEach(el => { el.style.width = el.dataset.w + "%"; }));
+}
+
+async function loadTreatmentMetrics() {
+  const r = periodRange(trtMetricsState.period);
+  const qs = new URLSearchParams();
+  if (r.from) qs.set("from", r.from.toISOString());
+  try {
+    const b = await api(`/api/dashboard/billing?${qs.toString()}`);
+    renderTreatmentDonut(b.byTreatmentCitas);
+    renderTreatmentBars(b.byTreatmentCitas);
+  } catch (err) { toast(err.message, "error"); }
+}
+
+// Gráfico de sectores: % de cada tipo de tratamiento sobre el total de citas del periodo.
+function renderTreatmentDonut(rowsIn) {
+  const box = document.getElementById("trtDonutBox"); if (!box) return;
+  const rows = (rowsIn || []).filter(s => s.citas > 0);
+  const total = rows.reduce((s, r) => s + r.citas, 0);
+  if (!rows.length || !total) { box.innerHTML = `<h3 style="margin:0 0 12px">Reparto de citas</h3><div class="empty-state" style="padding:24px">Sin citas en este periodo.</div>`; return; }
+  const R = 70, C = 2 * Math.PI * R;
+  let cum = 0;
+  const segs = rows.map((s, i) => {
+    const frac = s.citas / total, arc = frac * C, rot = cum * 360; cum += frac;
+    return `<circle class="seg" cx="90" cy="90" r="${R}" stroke="${CHART_COLORS[i % CHART_COLORS.length]}"
+      stroke-dasharray="${arc.toFixed(2)} ${C.toFixed(2)}" stroke-dashoffset="${arc.toFixed(2)}"
+      transform="rotate(${rot.toFixed(2)} 90 90)"></circle>`;
+  }).join("");
+  const legend = rows.map((s, i) => {
+    const pc = Math.round((s.citas / total) * 100);
+    return `<div class="li"><span class="dot" style="background:${CHART_COLORS[i % CHART_COLORS.length]}"></span>
+      <span class="nm">${escapeHtml(s.name)}</span><span class="vl">${s.citas}</span><span class="pc">${pc}%</span></div>`;
+  }).join("");
+  box.innerHTML = `<h3 style="margin:0 0 12px">Reparto de citas por tratamiento</h3><div class="donut-wrap">
+      <div class="donut"><svg viewBox="0 0 180 180" width="180" height="180">${segs}</svg>
+        <div class="center"><div class="big">${total}</div><div class="lbl">Citas</div></div>
+      </div>
+      <div class="legend">${legend}</div>
+    </div>`;
+  requestAnimationFrame(() => box.querySelectorAll(".seg").forEach(el => { el.style.strokeDashoffset = "0"; }));
+}
+
+// Gráfico de barras: nº de citas de cada tipo de tratamiento, cada barra con su color.
+function renderTreatmentBars(rowsIn) {
+  const box = document.getElementById("trtBarsBox"); if (!box) return;
+  const rows = (rowsIn || []).filter(s => s.citas > 0);
+  if (!rows.length) { box.innerHTML = `<h3 style="margin:0 0 12px">Nº de citas por tratamiento</h3><div class="empty-state" style="padding:24px">Sin citas en este periodo.</div>`; return; }
+  const max = Math.max(1, ...rows.map(r => r.citas));
+  box.innerHTML = `<h3 style="margin:0 0 12px">Nº de citas por tratamiento</h3><div class="bars">
+    ${rows.map((r, i) => `<div class="col">
+      <div class="bval">${r.citas}</div>
+      <div class="bar" style="background:${CHART_COLORS[i % CHART_COLORS.length]}" data-h="${Math.max(6, Math.round((r.citas / max) * 100))}" title="${escapeHtml(r.name)}: ${r.citas} cita(s)"></div>
+      <div class="blbl">${escapeHtml(r.name.length > 11 ? r.name.slice(0, 10) + "…" : r.name)}</div>
+    </div>`).join("")}
+  </div>`;
+  requestAnimationFrame(() => box.querySelectorAll(".bar").forEach(el => { el.style.height = el.dataset.h + "%"; }));
 }
 
 // ====================================================================
@@ -966,10 +1057,9 @@ function startOfWeek(d) {
 // Etiqueta del mes de la semana visible (lunes–viernes). Si la semana cruza de
 // un mes a otro, muestra los dos (p. ej. "Junio/Julio").
 function weekMonthLabel(ws) {
-  const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
   const fri = new Date(ws); fri.setDate(fri.getDate() + 4);
-  const m1 = cap(ws.toLocaleDateString("es-ES", { month: "long" }));
-  const m2 = cap(fri.toLocaleDateString("es-ES", { month: "long" }));
+  const m1 = ws.toLocaleDateString("es-ES", { month: "long" }).toUpperCase();
+  const m2 = fri.toLocaleDateString("es-ES", { month: "long" }).toUpperCase();
   return m1 === m2 ? m1 : `${m1}/${m2}`;
 }
 
@@ -2432,6 +2522,13 @@ function openTreatmentModal(existing) {
         <select class="select" id="trtActive"><option value="true" ${t.active!==false?"selected":""}>Sí</option><option value="false" ${t.active===false?"selected":""}>No</option></select>
       </div>
     </div>
+    <div class="row single"><div class="field">
+      <label>Profesionales que cubren este tratamiento</label>
+      <div class="trt-pros" id="trtPros">
+        ${cache.professionals.map(p => `<label class="trt-pro-chk"><input type="checkbox" value="${p.id}" ${(t.professional_ids||[]).includes(p.id)?"checked":""}/> <span>${escapeHtml(p.name)}</span></label>`).join("") || '<span style="color:var(--text-3);font-size:13px">No hay profesionales.</span>'}
+      </div>
+      <small style="color:var(--text-3);font-size:11px">El bot solo asignará este tratamiento a los profesionales marcados. Si no marcas ninguno, decidirá por especialidad.</small>
+    </div></div>
     <div class="actions">
       <button class="btn" onclick="closeModal()">Cancelar</button>
       <button class="btn primary" id="saveTrt">Guardar</button>
@@ -2446,6 +2543,7 @@ function openTreatmentModal(existing) {
         price_eur: priceRaw === "" ? null : Number(priceRaw),
         is_first_visit: body.querySelector("#trtFirst").value === "true",
         active: body.querySelector("#trtActive").value === "true",
+        professional_ids: Array.from(body.querySelectorAll("#trtPros input:checked")).map(i => i.value),
       };
       if (!payload.name) { toast("Falta el nombre", "error"); return; }
       try {

@@ -533,12 +533,15 @@ app.get("/api/dashboard/billing", requireAuth, async (req, res) => {
     // Citas por profesional (para las métricas por profesional).
     // Se cuenta cada cita UNA sola vez (dedupe defensivo por id).
     const byProfCitas = {};
+    const byProfOutcome = {};   // { prof: { done, noShow } } para el % de citas atendidas
+    const byTreatmentCitas = {}; // { tratamiento: nº de citas } para las métricas por tratamiento
     const vistas = new Set();
     for (const a of appts || []) {
       if (!a || vistas.has(a.id)) continue;
       vistas.add(a.id);
       if (a.status === "cancelled") continue;
       const pName = (a.df_professionals && a.df_professionals.name) || "Sin profesional";
+      const tName = (a.df_treatments && a.df_treatments.name) || "Otros";
       if (treatment_id && a.treatment_id !== treatment_id) continue;
       if (professional_id && a.professional_id !== professional_id) continue;
       if (filterAge && !ageOk(ageOf(a.df_patients && a.df_patients.birth_date))) continue;
@@ -546,6 +549,10 @@ app.get("/api/dashboard/billing", requireAuth, async (req, res) => {
       if (fromT && rt < fromT) continue;
       if (toT && rt > toT) continue;
       byProfCitas[pName] = (byProfCitas[pName] || 0) + 1;
+      byTreatmentCitas[tName] = (byTreatmentCitas[tName] || 0) + 1;
+      const oc = byProfOutcome[pName] || (byProfOutcome[pName] = { done: 0, noShow: 0 });
+      if (a.status === "done") oc.done++;
+      else if (a.status === "no_show") oc.noShow++;
     }
 
     // Últimos 6 meses (relleno de meses vacíos)
@@ -558,14 +565,29 @@ app.get("/api/dashboard/billing", requireAuth, async (req, res) => {
     const byTreatmentArr = Object.entries(byTreatment).map(([name, amount]) => ({ name, amount: round2(amount) })).sort((a, b) => b.amount - a.amount);
     const profNames = new Set([...Object.keys(byProfCitas), ...Object.keys(byProfFacturado)]);
     const byProfessional = [...profNames]
-      .map((name) => ({ name, citas: byProfCitas[name] || 0, facturado: round2(byProfFacturado[name] || 0) }))
+      .map((name) => {
+        const oc = byProfOutcome[name] || { done: 0, noShow: 0 };
+        return {
+          name,
+          citas: byProfCitas[name] || 0,
+          facturado: round2(byProfFacturado[name] || 0),
+          atendidas: oc.done,
+          no_asistidas: oc.noShow,
+        };
+      })
       .sort((a, b) => b.facturado - a.facturado || b.citas - a.citas);
+
+    // Citas por tratamiento (conteo) para el gráfico de sectores y el de barras.
+    const byTreatmentCitasArr = Object.entries(byTreatmentCitas)
+      .map(([name, citas]) => ({ name, citas }))
+      .sort((a, b) => b.citas - a.citas);
 
     return res.json({
       totalFacturado: round2(totalFacturado),
       totalPendiente: round2(totalPendiente),
       numPagos, numPendientes,
       byTreatment: byTreatmentArr,
+      byTreatmentCitas: byTreatmentCitasArr,
       byMonth: byMonthArr,
       byProfessional,
     });
@@ -1386,13 +1408,27 @@ app.patch("/api/professionals/:id", requireAuth, async (req, res) => {
 app.get("/api/treatments", requireAuth, async (_req, res) => {
   try {
     const { data, error } = await supabase
-      .from("df_treatments").select("*").order("name", { ascending: true });
+      .from("df_treatments").select("*, df_treatment_professionals(professional_id)").order("name", { ascending: true });
     if (error) throw error;
-    return res.json({ treatments: data });
+    // Aplana los profesionales vinculados a cada tratamiento en un array de IDs.
+    const treatments = (data || []).map((t) => {
+      const professional_ids = (t.df_treatment_professionals || []).map((x) => x.professional_id);
+      const { df_treatment_professionals, ...rest } = t;
+      return { ...rest, professional_ids };
+    });
+    return res.json({ treatments });
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
 });
+
+// Sincroniza la lista de profesionales que cubren un tratamiento (borra y reinserta).
+async function syncTreatmentProfessionals(treatmentId, ids) {
+  if (!Array.isArray(ids)) return;
+  await supabase.from("df_treatment_professionals").delete().eq("treatment_id", treatmentId);
+  const rows = [...new Set(ids.filter(Boolean))].map((pid) => ({ treatment_id: treatmentId, professional_id: pid }));
+  if (rows.length) await supabase.from("df_treatment_professionals").insert(rows);
+}
 
 app.post("/api/treatments", requireAuth, async (req, res) => {
   try {
@@ -1407,6 +1443,7 @@ app.post("/api/treatments", requireAuth, async (req, res) => {
         price_eur: price_eur === "" || price_eur == null ? null : Number(price_eur),
       }).select().single();
     if (error) throw error;
+    if (Array.isArray(req.body?.professional_ids)) await syncTreatmentProfessionals(data.id, req.body.professional_ids);
     return res.json({ treatment: data });
   } catch (err) {
     return res.status(500).json({ error: err.message });
@@ -1419,9 +1456,14 @@ app.patch("/api/treatments/:id", requireAuth, async (req, res) => {
     const patch = {};
     for (const k of allowed) if (k in (req.body || {})) patch[k] = req.body[k];
     if ("price_eur" in patch) patch.price_eur = patch.price_eur === "" || patch.price_eur == null ? null : Number(patch.price_eur);
-    const { data, error } = await supabase
-      .from("df_treatments").update(patch).eq("id", req.params.id).select().single();
-    if (error) throw error;
+    let data = null;
+    if (Object.keys(patch).length) {
+      const r = await supabase.from("df_treatments").update(patch).eq("id", req.params.id).select().single();
+      if (r.error) throw r.error;
+      data = r.data;
+    }
+    // Profesionales que cubren el tratamiento (no es columna de df_treatments).
+    if (Array.isArray(req.body?.professional_ids)) await syncTreatmentProfessionals(req.params.id, req.body.professional_ids);
     return res.json({ treatment: data });
   } catch (err) {
     return res.status(500).json({ error: err.message });
