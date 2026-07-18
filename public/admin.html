@@ -310,6 +310,7 @@ table td, .agenda-grid .hour { font-variant-numeric: tabular-nums; }
 .chk-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:6px 12px; }
 .chk-row { display:flex; align-items:center; gap:8px; font-size:13px; color:var(--text-2); cursor:pointer; padding:3px 0; }
 .chk-row:hover { color:var(--text); }
+.manual-suggest { background:#fff; border:1px solid var(--line-2); border-radius:8px; max-height:260px; overflow-y:auto; box-shadow:var(--shadow-sm); }
 .chips { display:flex; flex-wrap:wrap; gap:6px; }
 .chip { display:inline-flex; align-items:center; gap:6px; padding:4px 6px 4px 11px; border-radius:999px; font-size:12px; font-weight:600; background:#EEF3FC; color:var(--accent); border:1px solid #CFE0F7; }
 .chip button { display:inline-flex; align-items:center; justify-content:center; width:17px; height:17px; border-radius:50%; border:0; cursor:pointer; background:#D8E4F7; color:var(--accent); font-size:13px; line-height:1; padding:0; }
@@ -2232,10 +2233,15 @@ window.sendCampaign = async function (id) {
   try {
     toast("Enviando… no cierres la ventana");
     const r = await api(`/api/campaigns/${id}/send`, { method: "POST" });
-    let out = `Enviados: ${r.sent}` + (r.failed ? ` · Fallidos: ${r.failed}` : "");
-    if (r.remaining > 0) out += ` · Quedan ${r.remaining} (pulsa "Enviar ahora" otra vez para continuar)`;
-    if (r.skippedNoPhoneOrOptOut) out += ` · ${r.skippedNoPhoneOrOptOut} sin teléfono o dados de baja`;
-    if (!r.sent && !r.failed && r.remaining === 0) out = "No había destinatarios pendientes con teléfono.";
+    let out;
+    if (r.alreadyAll) {
+      out = "Ya se había enviado a todos los destinatarios de esta campaña.";
+    } else {
+      out = `Enviados: ${r.sent}` + (r.failed ? ` · Fallidos: ${r.failed}` : "");
+      if (r.remaining > 0) out += ` · Quedan ${r.remaining} (pulsa "Enviar ahora" otra vez)`;
+      if (r.skippedNoPhone) out += ` · ${r.skippedNoPhone} sin teléfono`;
+      if (r.error_detail) out += ` · Error de WhatsApp: ${r.error_detail}`;
+    }
     toast(out, r.failed && !r.sent ? "error" : "success");
     closeModal();
     renderMarketing();
@@ -2425,10 +2431,8 @@ function openCampaignModal() {
         };
       } else if (detail.dataset.detail === "manual") {
         detail.innerHTML = `
-          <div style="width:100%;position:relative">
-            <input class="input" id="manualSearch" placeholder="Busca por nombre o teléfono y añade pacientes…" autocomplete="off" style="width:100%">
-            <div id="manualSuggest" style="background:var(--bg-2);border:1px solid var(--line);border-radius:6px;margin-top:4px;max-height:170px;overflow-y:auto;display:none;position:absolute;left:0;right:0;z-index:5"></div>
-          </div>
+          <input class="input" id="manualSearch" placeholder="Busca por nombre o teléfono y añade pacientes…" autocomplete="off" style="width:100%">
+          <div id="manualSuggest" class="manual-suggest" style="display:none"></div>
           <div class="chips" id="manualChips" style="width:100%"></div>`;
         const search = detail.querySelector("#manualSearch");
         const suggest = detail.querySelector("#manualSuggest");

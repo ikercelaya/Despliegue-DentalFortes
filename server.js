@@ -1923,6 +1923,16 @@ async function fetchApprovedTemplate(name) {
   return { language: tpl.language, bodyVarCount };
 }
 
+// Normaliza un teléfono a formato internacional para WhatsApp (solo dígitos, con prefijo
+// de país). Un móvil español de 9 dígitos (empieza por 6/7/8/9) se prefija con 34.
+function normalizeWaPhone(raw) {
+  let p = String(raw || "").replace(/\D/g, "");
+  if (!p) return null;
+  if (p.length === 9 && /^[6789]/.test(p)) p = "34" + p;          // móvil ES sin prefijo
+  if (p.length < 8) return null;                                   // demasiado corto: no válido
+  return p;
+}
+
 // ENVÍO MANUAL ("Enviar ahora"): manda la plantilla de la campaña a los pacientes del
 // segmento. Se procesa por lotes (BATCH); al reintentar continúa con los que aún no se han
 // intentado (df_campaign_recipients). Solo se envía a pacientes con teléfono y que no hayan
@@ -1954,28 +1964,43 @@ app.post("/api/campaigns/:id/send", requireAuth, async (req, res) => {
     if (matched == null) {
       return res.status(400).json({ error: "El segmento es manual/personalizado: no hay destinatarios calculables automáticamente." });
     }
-    // Solo con teléfono y sin opt-out explícito.
-    const eligible = matched.filter((p) => p.phone && p.marketing_consent !== false);
+    // Destinatarios: cualquiera con un teléfono utilizable (se normaliza a formato
+    // internacional). La gestión del consentimiento de marketing es responsabilidad de la
+    // clínica; para poder probar/enviar no se exige la marca (que por defecto es false).
+    const eligible = matched
+      .map((p) => ({ ...p, waPhone: normalizeWaPhone(p.phone) }))
+      .filter((p) => p.waPhone);
+    if (eligible.length === 0) {
+      return res.status(400).json({ error: "Ningún paciente del segmento tiene un teléfono válido para enviar por WhatsApp." });
+    }
 
     // Excluye a quien ya se haya INTENTADO (enviado o fallado) en esta campaña.
     const { data: already } = await supabase
       .from("df_campaign_recipients").select("patient_id").eq("campaign_id", campaign.id);
     const attempted = new Set((already || []).map((r) => r.patient_id));
     const pending = eligible.filter((p) => !attempted.has(p.id));
+
+    // Todos los elegibles ya se habían intentado: no hay nada nuevo que enviar.
+    if (pending.length === 0) {
+      if (campaign.status !== "sent") {
+        await supabase.from("df_campaigns").update({ status: "sent", sent_at: new Date().toISOString() }).eq("id", campaign.id);
+      }
+      return res.json({ sent: 0, failed: 0, remaining: 0, totalEligible: eligible.length, alreadyAll: true, done: true });
+    }
     const batch = pending.slice(0, BATCH);
 
-    let sent = 0, failed = 0;
+    let sent = 0, failed = 0, lastError = null;
     for (let i = 0; i < batch.length; i += CONCURRENCY) {
       const slice = batch.slice(i, i + CONCURRENCY);
       await Promise.all(slice.map(async (pt) => {
         const firstName = String(pt.full_name || "").trim().split(/\s+/)[0] || "";
         const params = tplInfo.bodyVarCount === 1 ? [firstName || "paciente"] : [];
         try {
-          await wa.sendTemplate(pt.phone, templateName, tplInfo.language, params);
+          await wa.sendTemplate(pt.waPhone, templateName, tplInfo.language, params);
           sent++;
           await supabase.from("df_campaign_recipients").insert({ campaign_id: campaign.id, patient_id: pt.id, status: "sent", sent_at: new Date().toISOString() }).then(() => {}, () => {});
-        } catch (_e) {
-          failed++;
+        } catch (e) {
+          failed++; lastError = e.message;
           await supabase.from("df_campaign_recipients").insert({ campaign_id: campaign.id, patient_id: pt.id, status: "failed" }).then(() => {}, () => {});
         }
       }));
@@ -1989,7 +2014,8 @@ app.post("/api/campaigns/:id/send", requireAuth, async (req, res) => {
     return res.json({
       sent, failed, remaining,
       totalEligible: eligible.length,
-      skippedNoPhoneOrOptOut: matched.length - eligible.length,
+      skippedNoPhone: matched.length - eligible.length,
+      error_detail: failed && !sent ? lastError : undefined,
       done: remaining === 0,
     });
   } catch (err) {
