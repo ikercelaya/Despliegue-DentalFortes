@@ -317,6 +317,9 @@ table td, .agenda-grid .hour { font-variant-numeric: tabular-nums; }
 .seg-add { display:flex; gap:8px; margin-top:10px; }
 .seg-add .input { flex:1; }
 .mini-note { font-size:11px; color:var(--text-3); }
+.cmp-preview { margin-top:10px; min-height:20px; display:flex; align-items:center; gap:6px; }
+.cmp-preview-count { display:inline-block; font-size:13px; font-weight:700; color:var(--accent); background:#EEF3FC; border:1px solid var(--line-2); border-radius:999px; padding:5px 12px; }
+.cmp-preview-note { font-size:12px; color:var(--text-3); }
 
 /* Cobros */
 .pay-row { display:flex; justify-content:space-between; align-items:center; gap:10px; padding:9px 0; border-bottom:1px solid var(--line); font-size:13px; }
@@ -1722,10 +1725,18 @@ async function openAppointmentModal(id, prefill) {
   const pad2 = (n) => String(n).padStart(2, "0");
   const startBase = existing ? new Date(existing.starts_at) : now;
   const startDate = `${startBase.getFullYear()}-${pad2(startBase.getMonth()+1)}-${pad2(startBase.getDate())}`;
-  const startHH = pad2(startBase.getHours());
-  const startMM = pad2(startBase.getMinutes());
   const HOURS_OPTS = [9,10,11,12,13,14,15,16,17,18,19];      // horas de apertura de la clínica
   const MINS_OPTS = [0,5,10,15,20,30,40,45,50];             // minutos permitidos
+  // Al EDITAR mostramos la hora actual; al CREAR los campos van vacíos para poder abrir
+  // el desplegable y elegir cómodamente. Si una cita existente tiene un minuto/hora fuera
+  // de la lista, lo añadimos para no perderlo.
+  const hoursList = HOURS_OPTS.slice();
+  const minsList = MINS_OPTS.slice();
+  if (existing) {
+    if (!hoursList.includes(startBase.getHours())) hoursList.push(startBase.getHours());
+    if (!minsList.includes(startBase.getMinutes())) minsList.push(startBase.getMinutes());
+    hoursList.sort((a,b)=>a-b); minsList.sort((a,b)=>a-b);
+  }
 
   openModal(`
     <h3>${existing ? "Editar cita" : "Nueva cita"}</h3>
@@ -1754,12 +1765,16 @@ async function openAppointmentModal(id, prefill) {
       <div class="field"><label>Inicio</label>
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
           <input class="input" type="date" id="apDate" value="${startDate}" style="flex:1;min-width:150px" />
-          <input class="input" id="apHour" list="apHoursDL" inputmode="numeric" maxlength="2" value="${startHH}" placeholder="HH" style="width:66px;text-align:center" autocomplete="off" />
+          <select class="select" id="apHour" style="width:82px;text-align:center">
+            <option value="">HH</option>
+            ${hoursList.map(h => `<option value="${pad2(h)}" ${existing && startBase.getHours()===h ? "selected" : ""}>${pad2(h)}</option>`).join("")}
+          </select>
           <span style="color:var(--text-3);font-weight:700">:</span>
-          <input class="input" id="apMin" list="apMinsDL" inputmode="numeric" maxlength="2" value="${startMM}" placeholder="MM" style="width:66px;text-align:center" autocomplete="off" />
+          <select class="select" id="apMin" style="width:82px;text-align:center">
+            <option value="">MM</option>
+            ${minsList.map(m => `<option value="${pad2(m)}" ${existing && startBase.getMinutes()===m ? "selected" : ""}>${pad2(m)}</option>`).join("")}
+          </select>
         </div>
-        <datalist id="apHoursDL">${HOURS_OPTS.map(h => `<option value="${pad2(h)}"></option>`).join("")}</datalist>
-        <datalist id="apMinsDL">${MINS_OPTS.map(m => `<option value="${pad2(m)}"></option>`).join("")}</datalist>
         <small style="color:var(--text-3);font-size:11px">La duración (fin) se calcula sola según el tratamiento.</small>
       </div>
     </div>
@@ -1830,8 +1845,11 @@ async function openAppointmentModal(id, prefill) {
       // El inicio se compone de la fecha + hora + minutos; el fin se calcula con la
       // duración del tratamiento (por defecto 30 min), así no hace falta el campo Fin.
       const dur = Number(body.querySelector("#apTreat").selectedOptions[0]?.dataset.dur) || 30;
-      const hh = String(body.querySelector("#apHour").value || "").padStart(2, "0");
-      const mm = String(body.querySelector("#apMin").value || "").padStart(2, "0");
+      const hhRaw = body.querySelector("#apHour").value;
+      const mmRaw = body.querySelector("#apMin").value;
+      if (!hhRaw || !mmRaw) { toast("Elige la hora y los minutos de la cita", "error"); return; }
+      const hh = String(hhRaw).padStart(2, "0");
+      const mm = String(mmRaw).padStart(2, "0");
       const startD = new Date(`${body.querySelector("#apDate").value}T${hh}:${mm}`);
       if (isNaN(startD.getTime())) { toast("Fecha u hora de inicio no válida", "error"); return; }
       const payload = {
@@ -2156,23 +2174,24 @@ async function renderMarketing() {
       </div>`;
       return;
     }
-    const segLabel = (c) => {
-      const cfg = c.segment_config || {};
-      const segs = Array.isArray(cfg.segments) && cfg.segments.length ? cfg.segments : (c.segment ? [c.segment] : []);
-      return segs.map(s => s.startsWith("custom:") ? s.slice(7) : s.replaceAll("_", " ")).join(", ") || "—";
-    };
+    campaignsCache = {};
+    campaigns.forEach(c => { campaignsCache[c.id] = c; });
     document.getElementById("campaignsCard").innerHTML = `
       <table>
-        <thead><tr><th>Nombre</th><th>Segmentos</th><th>Plantilla</th><th>Estado</th><th>Programada</th><th>Enviada</th></tr></thead>
+        <thead><tr><th>Nombre</th><th>Segmentos</th><th>Plantilla</th><th>Estado</th><th>Programada</th><th>Enviada</th><th></th></tr></thead>
         <tbody>
           ${campaigns.map(c => `
             <tr>
               <td><strong>${escapeHtml(c.name)}</strong></td>
-              <td>${escapeHtml(segLabel(c))}</td>
+              <td>${escapeHtml(campaignSegLabel(c))}</td>
               <td>${c.message_template ? escapeHtml(c.message_template) : "—"}</td>
-              <td><span class="badge badge-${c.status==="sent"?"done":c.status==="scheduled"?"confirmed":"pending"}">${escapeHtml(c.status)}</span></td>
+              <td><span class="badge badge-${c.status==="sent"?"done":c.status==="scheduled"?"confirmed":c.status==="cancelled"?"cancelled":"pending"}">${escapeHtml(CAMPAIGN_STATUS_LABEL[c.status] || c.status)}</span></td>
               <td>${c.scheduled_at ? fmtDateTime(c.scheduled_at) : "—"}</td>
               <td>${c.sent_at ? fmtDateTime(c.sent_at) : "—"}</td>
+              <td style="white-space:nowrap;text-align:right">
+                <button class="btn" style="padding:5px 10px;font-size:12px" onclick="showCampaignDetails('${c.id}')">Ver detalles</button>
+                <button class="btn danger" style="padding:5px 10px;font-size:12px;margin-left:6px" onclick="deleteCampaign('${c.id}')">Eliminar</button>
+              </td>
             </tr>
           `).join("")}
         </tbody>
@@ -2180,6 +2199,62 @@ async function renderMarketing() {
     `;
   } catch (err) { toast(err.message, "error"); }
 }
+
+// Etiquetas y utilidades de campañas (usadas por la tabla y el modal de detalles).
+const CAMPAIGN_STATUS_LABEL = { draft: "Borrador", scheduled: "Programada", sent: "Enviada", cancelled: "Cancelada" };
+let campaignsCache = {};
+function campaignSegLabel(c) {
+  const cfg = c.segment_config || {};
+  const segs = Array.isArray(cfg.segments) && cfg.segments.length ? cfg.segments : (c.segment ? [c.segment] : []);
+  return segs.map(s => s.startsWith("custom:") ? s.slice(7) : s.replaceAll("_", " ")).join(", ") || "—";
+}
+
+window.deleteCampaign = async function (id) {
+  const c = campaignsCache[id];
+  if (!confirm(`¿Eliminar la campaña "${c ? c.name : ""}"? Se cancelará y se borrará; no se enviará.`)) return;
+  try {
+    await api(`/api/campaigns/${id}`, { method: "DELETE" });
+    toast("Campaña eliminada", "success");
+    closeModal();
+    renderMarketing();
+  } catch (err) { toast(err.message, "error"); }
+};
+
+window.showCampaignDetails = function (id) {
+  const c = campaignsCache[id];
+  if (!c) { toast("No se encontró la campaña", "error"); return; }
+  const cfg = c.segment_config || {};
+  const treatments = Array.isArray(cfg.treatments) ? cfg.treatments : [];
+  const ageRanges = Array.isArray(cfg.age_ranges) ? cfg.age_ranges : [];
+  const row = (label, val) => `<div style="display:flex;justify-content:space-between;gap:16px;padding:9px 0;border-bottom:1px solid var(--line)">
+    <span style="color:var(--text-3);font-size:13px">${label}</span>
+    <span style="color:var(--text);font-weight:600;font-size:13px;text-align:right">${val}</span></div>`;
+  // Estado de envío legible: hoy las campañas NO se envían solas (no hay proceso de envío),
+  // así que lo dejamos claro para no dar por hecho un envío que no ocurre.
+  let entrega;
+  if (c.status === "sent") entrega = `<span style="color:var(--success)">Enviada ${c.sent_at ? "el " + fmtDateTime(c.sent_at) : ""}</span>`;
+  else if (c.status === "cancelled") entrega = `<span style="color:var(--danger)">Cancelada</span>`;
+  else entrega = `<span style="color:var(--warn)">Pendiente de envío</span>`;
+  openModal(`
+    <h3>Detalles de la campaña</h3>
+    <div style="margin-top:6px">
+      ${row("Nombre", escapeHtml(c.name))}
+      ${row("Segmentos", escapeHtml(campaignSegLabel(c)))}
+      ${treatments.length ? row("Tratamientos", escapeHtml(treatments.join(", "))) : ""}
+      ${ageRanges.length ? row("Rangos de edad", escapeHtml(ageRanges.join(", "))) : ""}
+      ${row("Plantilla de Meta", c.message_template ? escapeHtml(c.message_template) : "—")}
+      ${row("Estado", escapeHtml(CAMPAIGN_STATUS_LABEL[c.status] || c.status))}
+      ${row("Entrega", entrega)}
+      ${row("Programada", c.scheduled_at ? fmtDateTime(c.scheduled_at) : "—")}
+      ${row("Enviada", c.sent_at ? fmtDateTime(c.sent_at) : "—")}
+      ${row("Creada", c.created_at ? fmtDateTime(c.created_at) : "—")}
+    </div>
+    <div class="actions">
+      <button class="btn danger" style="margin-right:auto" onclick="deleteCampaign('${c.id}')">Eliminar</button>
+      <button class="btn" onclick="closeModal()">Cerrar</button>
+    </div>
+  `);
+};
 
 // Segmentos estándar del constructor de campañas
 const STD_SEGMENTS = [
@@ -2219,6 +2294,7 @@ function openCampaignModal() {
         <input class="input" id="newSegName" placeholder="Nombre de un segmento nuevo…" maxlength="40" />
         <button type="button" class="btn" id="addSegBtn">+ Crear segmento</button>
       </div>
+      <div id="cmpPreview" class="cmp-preview"></div>
     </div></div>
 
     <div class="row">
@@ -2249,6 +2325,34 @@ function openCampaignModal() {
     }
     body.querySelectorAll(".seg-item").forEach(wireSeg);
 
+    // Previsualización de destinatarios: "N pacientes seleccionados" según el segmento.
+    const AUTO_SEGS = ["por_edad", "por_tratamiento", "inactivos", "presupuestos_no_aceptados"];
+    let previewTimer;
+    const debouncedPreview = () => { clearTimeout(previewTimer); previewTimer = setTimeout(updatePreview, 350); };
+    async function updatePreview() {
+      const box = body.querySelector("#cmpPreview"); if (!box) return;
+      const segments = [...body.querySelectorAll(".seg-chk:checked")].map(c => c.dataset.seg);
+      if (!segments.length) { box.innerHTML = ""; return; }
+      const treatments = [...body.querySelectorAll(".treat-chk:checked")].map(c => c.value);
+      if (!segments.some(s => AUTO_SEGS.includes(s))) {
+        box.innerHTML = `<span class="cmp-preview-note">Segmento manual/personalizado: los destinatarios se eligen a mano.</span>`;
+        return;
+      }
+      box.innerHTML = `<span class="cmp-preview-note">Calculando destinatarios…</span>`;
+      try {
+        const r = await api("/api/campaigns/preview", { method: "POST", body: { segments, treatments, age_ranges: ageRanges } });
+        if (r.manualOnly || r.count == null) {
+          box.innerHTML = `<span class="cmp-preview-note">Segmento manual: los destinatarios se eligen a mano.</span>`;
+          return;
+        }
+        const n = r.count;
+        box.innerHTML = `<span class="cmp-preview-count">${n} paciente${n === 1 ? "" : "s"} seleccionado${n === 1 ? "" : "s"}</span>` +
+          (r.withPhone != null && r.withPhone !== n ? ` <span class="cmp-preview-note">· ${r.withPhone} con WhatsApp</span>` : "");
+      } catch (e) { box.innerHTML = `<span class="cmp-preview-note" style="color:var(--danger)">No se pudieron contar los destinatarios.</span>`; }
+    }
+    // Cualquier cambio de segmento o de tratamiento recalcula el conteo.
+    body.querySelector("#segList").addEventListener("change", debouncedPreview);
+
     async function buildDetail(detail) {
       detail.dataset.loaded = "1";
       if (detail.dataset.detail === "treat") {
@@ -2277,7 +2381,7 @@ function openCampaignModal() {
           chips.innerHTML = ageRanges.map((r, i) => `
             <span class="chip">${r.min}${r.max != null && r.max !== r.min ? "–" + r.max : ""} años
               <button type="button" data-i="${i}">×</button></span>`).join("");
-          chips.querySelectorAll("button").forEach(b => b.onclick = () => { ageRanges.splice(+b.dataset.i, 1); renderChips(); });
+          chips.querySelectorAll("button").forEach(b => b.onclick = () => { ageRanges.splice(+b.dataset.i, 1); renderChips(); debouncedPreview(); });
         };
         detail.querySelector("#addAge").onclick = () => {
           let f = parseInt(detail.querySelector("#ageFrom").value, 10);
@@ -2288,6 +2392,7 @@ function openCampaignModal() {
           ageRanges.push({ min: Math.min(f, t), max: Math.max(f, t) });
           detail.querySelector("#ageFrom").value = ""; detail.querySelector("#ageTo").value = "";
           renderChips();
+          debouncedPreview();
         };
       }
     }

@@ -1795,6 +1795,97 @@ app.patch("/api/campaigns/:id", requireAuth, async (req, res) => {
   }
 });
 
+// Previsualización: cuenta cuántos pacientes caen en el segmento elegido, para mostrar
+// "N pacientes seleccionados" al crear la campaña. Union (OR) entre los segmentos con
+// criterio automático (edad, tratamiento, inactivos, presupuestos). Los segmentos
+// manuales/personalizados no se pueden contar automáticamente.
+app.post("/api/campaigns/preview", requireAuth, async (req, res) => {
+  try {
+    const b = req.body || {};
+    const segments = Array.isArray(b.segments) ? b.segments.map((s) => String(s)) : [];
+    const treatments = Array.isArray(b.treatments) ? b.treatments.map((t) => String(t)) : [];
+    const ageRanges = Array.isArray(b.age_ranges) ? b.age_ranges : [];
+
+    const wantEdad = segments.includes("por_edad");
+    const wantTrat = segments.includes("por_tratamiento");
+    const wantInact = segments.includes("inactivos");
+    const wantPresu = segments.includes("presupuestos_no_aceptados");
+    if (!(wantEdad || wantTrat || wantInact || wantPresu)) {
+      return res.json({ count: null, withPhone: null, manualOnly: true });
+    }
+
+    const { data: patients } = await supabase.from("df_patients").select("id, birth_date, phone");
+    const now = new Date();
+    const ageOf = (bd) => {
+      if (!bd) return null;
+      const d = new Date(bd); if (isNaN(d.getTime())) return null;
+      let age = now.getFullYear() - d.getFullYear();
+      const m = now.getMonth() - d.getMonth();
+      if (m < 0 || (m === 0 && now.getDate() < d.getDate())) age--;
+      return age;
+    };
+
+    // Citas por paciente (para tratamiento e inactivos).
+    const apptsByPatient = {};
+    if (wantTrat || wantInact) {
+      const { data: appts } = await supabase
+        .from("df_appointments").select("patient_id, treatment_id, starts_at").neq("status", "cancelled");
+      for (const a of appts || []) {
+        if (!a.patient_id) continue;
+        (apptsByPatient[a.patient_id] = apptsByPatient[a.patient_id] || []).push(a);
+      }
+    }
+    // Pagos pendientes (aproximación de "presupuestos no aceptados").
+    const pendingByPatient = {};
+    if (wantPresu) {
+      const { data: pays } = await supabase.from("df_patient_payments").select("patient_id, paid");
+      for (const p of pays || []) { if (!p.paid && p.patient_id) pendingByPatient[p.patient_id] = true; }
+    }
+    const INACT_MONTHS = 6;
+    const inactCutoff = new Date(now.getFullYear(), now.getMonth() - INACT_MONTHS, now.getDate()).getTime();
+    const treatSet = new Set(treatments);
+
+    let count = 0, withPhone = 0;
+    for (const pt of patients || []) {
+      let match = false;
+      if (wantEdad && ageRanges.length) {
+        const age = ageOf(pt.birth_date);
+        if (age != null && ageRanges.some((r) => {
+          const min = r.min != null ? Number(r.min) : 0;
+          const max = r.max != null ? Number(r.max) : min;
+          return age >= min && age <= max;
+        })) match = true;
+      }
+      if (!match && wantTrat && treatSet.size) {
+        const list = apptsByPatient[pt.id] || [];
+        if (list.some((a) => a.treatment_id && treatSet.has(String(a.treatment_id)))) match = true;
+      }
+      if (!match && wantInact) {
+        const list = apptsByPatient[pt.id] || [];
+        const last = list.reduce((mx, a) => Math.max(mx, Date.parse(a.starts_at) || 0), 0);
+        if (!last || last < inactCutoff) match = true;
+      }
+      if (!match && wantPresu && pendingByPatient[pt.id]) match = true;
+      if (match) { count++; if (pt.phone) withPhone++; }
+    }
+    return res.json({ count, withPhone });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// Elimina (cancela) una campaña. Al borrarla se cancela: ya no queda programada ni se
+// enviará. Los destinatarios asociados se borran en cascada (ON DELETE CASCADE).
+app.delete("/api/campaigns/:id", requireAuth, async (req, res) => {
+  try {
+    const { error } = await supabase.from("df_campaigns").delete().eq("id", req.params.id);
+    if (error) throw error;
+    return res.json({ ok: true });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 // Diagnóstico de la conexión con Meta (usa las MISMAS variables que el CRM).
 // Sirve para saber si el problema al crear plantillas está en Vercel o en Meta.
 app.get("/api/marketing/diagnose", requireAuth, async (_req, res) => {
