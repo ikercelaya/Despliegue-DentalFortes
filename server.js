@@ -1795,80 +1795,193 @@ app.patch("/api/campaigns/:id", requireAuth, async (req, res) => {
   }
 });
 
+// Resuelve los pacientes que caen en un segmento de campaña (union/OR entre los segmentos
+// con criterio automático: edad, tratamiento, inactivos, presupuestos). Devuelve la lista
+// de pacientes coincidentes con sus datos. Lo usan la previsualización y el envío, para que
+// el "N seleccionados" y a quién se envía sean SIEMPRE lo mismo.
+async function matchCampaignPatients({ segments = [], treatments = [], ageRanges = [] }) {
+  const wantEdad = segments.includes("por_edad");
+  const wantTrat = segments.includes("por_tratamiento");
+  const wantInact = segments.includes("inactivos");
+  const wantPresu = segments.includes("presupuestos_no_aceptados");
+  if (!(wantEdad || wantTrat || wantInact || wantPresu)) return null; // solo manual/personalizado
+
+  const { data: patients } = await supabase
+    .from("df_patients").select("id, full_name, birth_date, phone, marketing_consent");
+  const now = new Date();
+  const ageOf = (bd) => {
+    if (!bd) return null;
+    const d = new Date(bd); if (isNaN(d.getTime())) return null;
+    let age = now.getFullYear() - d.getFullYear();
+    const m = now.getMonth() - d.getMonth();
+    if (m < 0 || (m === 0 && now.getDate() < d.getDate())) age--;
+    return age;
+  };
+  const apptsByPatient = {};
+  if (wantTrat || wantInact) {
+    const { data: appts } = await supabase
+      .from("df_appointments").select("patient_id, treatment_id, starts_at").neq("status", "cancelled");
+    for (const a of appts || []) {
+      if (!a.patient_id) continue;
+      (apptsByPatient[a.patient_id] = apptsByPatient[a.patient_id] || []).push(a);
+    }
+  }
+  const pendingByPatient = {};
+  if (wantPresu) {
+    const { data: pays } = await supabase.from("df_patient_payments").select("patient_id, paid");
+    for (const p of pays || []) { if (!p.paid && p.patient_id) pendingByPatient[p.patient_id] = true; }
+  }
+  const INACT_MONTHS = 6;
+  const inactCutoff = new Date(now.getFullYear(), now.getMonth() - INACT_MONTHS, now.getDate()).getTime();
+  const treatList = (treatments || []).map((t) => String(t));
+  const treatSet = new Set(treatList);
+
+  const matched = [];
+  for (const pt of patients || []) {
+    let match = false;
+    if (wantEdad && ageRanges.length) {
+      const age = ageOf(pt.birth_date);
+      if (age != null && ageRanges.some((r) => {
+        const min = r.min != null ? Number(r.min) : 0;
+        const max = r.max != null ? Number(r.max) : min;
+        return age >= min && age <= max;
+      })) match = true;
+    }
+    if (!match && wantTrat && treatSet.size) {
+      const list = apptsByPatient[pt.id] || [];
+      if (list.some((a) => a.treatment_id && treatSet.has(String(a.treatment_id)))) match = true;
+    }
+    if (!match && wantInact) {
+      const list = apptsByPatient[pt.id] || [];
+      const last = list.reduce((mx, a) => Math.max(mx, Date.parse(a.starts_at) || 0), 0);
+      if (!last || last < inactCutoff) match = true;
+    }
+    if (!match && wantPresu && pendingByPatient[pt.id]) match = true;
+    if (match) matched.push(pt);
+  }
+  return matched;
+}
+
+// Extrae la configuración de segmento (segments/treatments/age_ranges) de una campaña.
+function campaignSegmentInput(campaign) {
+  const cfg = (campaign && campaign.segment_config) || {};
+  const segments = Array.isArray(cfg.segments) && cfg.segments.length
+    ? cfg.segments.map((s) => String(s))
+    : (campaign && campaign.segment ? [String(campaign.segment)] : []);
+  return {
+    segments,
+    treatments: Array.isArray(cfg.treatments) ? cfg.treatments : [],
+    ageRanges: Array.isArray(cfg.age_ranges) ? cfg.age_ranges : [],
+  };
+}
+
 // Previsualización: cuenta cuántos pacientes caen en el segmento elegido, para mostrar
-// "N pacientes seleccionados" al crear la campaña. Union (OR) entre los segmentos con
-// criterio automático (edad, tratamiento, inactivos, presupuestos). Los segmentos
-// manuales/personalizados no se pueden contar automáticamente.
+// "N pacientes seleccionados" al crear la campaña.
 app.post("/api/campaigns/preview", requireAuth, async (req, res) => {
   try {
     const b = req.body || {};
-    const segments = Array.isArray(b.segments) ? b.segments.map((s) => String(s)) : [];
-    const treatments = Array.isArray(b.treatments) ? b.treatments.map((t) => String(t)) : [];
-    const ageRanges = Array.isArray(b.age_ranges) ? b.age_ranges : [];
+    const matched = await matchCampaignPatients({
+      segments: Array.isArray(b.segments) ? b.segments.map((s) => String(s)) : [],
+      treatments: Array.isArray(b.treatments) ? b.treatments : [],
+      ageRanges: Array.isArray(b.age_ranges) ? b.age_ranges : [],
+    });
+    if (matched == null) return res.json({ count: null, withPhone: null, manualOnly: true });
+    const withPhone = matched.filter((p) => p.phone).length;
+    return res.json({ count: matched.length, withPhone });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
 
-    const wantEdad = segments.includes("por_edad");
-    const wantTrat = segments.includes("por_tratamiento");
-    const wantInact = segments.includes("inactivos");
-    const wantPresu = segments.includes("presupuestos_no_aceptados");
-    if (!(wantEdad || wantTrat || wantInact || wantPresu)) {
-      return res.json({ count: null, withPhone: null, manualOnly: true });
+// Busca en Meta la plantilla APROBADA por nombre y devuelve su idioma y nº de variables
+// del cuerpo ({{1}}, {{2}}…), para poder enviarla con los parámetros correctos.
+async function fetchApprovedTemplate(name) {
+  const wabaId = process.env.WHATSAPP_BUSINESS_ACCOUNT_ID || process.env.WABA_ID || "";
+  const token = process.env.WHATSAPP_TOKEN || "";
+  if (!wabaId || !token) throw new Error("WhatsApp/Meta no configurado (WABA ID o token).");
+  const url = `${META_GRAPH_BASE}/${wabaId}/message_templates?limit=200&fields=name,status,language,components`;
+  const r = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data?.error?.error_user_msg || data?.error?.message || `Meta Graph ${r.status}`);
+  const matches = (data.data || []).filter((t) => t.name === name);
+  if (!matches.length) throw new Error(`La plantilla "${name}" no existe en Meta.`);
+  const tpl = matches.find((t) => t.status === "APPROVED") || matches[0];
+  if (tpl.status !== "APPROVED") throw new Error(`La plantilla "${name}" no está aprobada (estado: ${tpl.status}).`);
+  const body = (tpl.components || []).find((c) => c.type === "BODY");
+  const varNums = [...String(body?.text || "").matchAll(/\{\{\s*(\d+)\s*\}\}/g)].map((m) => Number(m[1]));
+  const bodyVarCount = varNums.length ? Math.max(...varNums) : 0;
+  return { language: tpl.language, bodyVarCount };
+}
+
+// ENVÍO MANUAL ("Enviar ahora"): manda la plantilla de la campaña a los pacientes del
+// segmento. Se procesa por lotes (BATCH); al reintentar continúa con los que aún no se han
+// intentado (df_campaign_recipients). Solo se envía a pacientes con teléfono y que no hayan
+// hecho opt-out (marketing_consent = false). Requiere plantilla con 0 o 1 variable (nombre).
+app.post("/api/campaigns/:id/send", requireAuth, async (req, res) => {
+  const BATCH = 100;
+  const CONCURRENCY = 6;
+  try {
+    const wa = require("./lib/whatsapp");
+    if (!wa.isConfigured()) return res.status(400).json({ error: "WhatsApp no está configurado en el servidor." });
+
+    const { data: campaign, error: cErr } = await supabase
+      .from("df_campaigns").select("*").eq("id", req.params.id).single();
+    if (cErr || !campaign) return res.status(404).json({ error: "Campaña no encontrada." });
+    if (campaign.status === "cancelled") return res.status(400).json({ error: "La campaña está cancelada." });
+
+    const templateName = campaign.message_template || (campaign.segment_config || {}).template_name;
+    if (!templateName) return res.status(400).json({ error: "La campaña no tiene plantilla de Meta asignada." });
+
+    // Datos de la plantilla (idioma + nº de variables) para enviar con los parámetros justos.
+    let tplInfo;
+    try { tplInfo = await fetchApprovedTemplate(templateName); }
+    catch (e) { return res.status(400).json({ error: e.message }); }
+    if (tplInfo.bodyVarCount > 1) {
+      return res.status(400).json({ error: `La plantilla "${templateName}" tiene ${tplInfo.bodyVarCount} variables. El envío automático solo admite plantillas con 0 o 1 variable (el nombre del paciente).` });
     }
 
-    const { data: patients } = await supabase.from("df_patients").select("id, birth_date, phone");
-    const now = new Date();
-    const ageOf = (bd) => {
-      if (!bd) return null;
-      const d = new Date(bd); if (isNaN(d.getTime())) return null;
-      let age = now.getFullYear() - d.getFullYear();
-      const m = now.getMonth() - d.getMonth();
-      if (m < 0 || (m === 0 && now.getDate() < d.getDate())) age--;
-      return age;
-    };
+    const matched = await matchCampaignPatients(campaignSegmentInput(campaign));
+    if (matched == null) {
+      return res.status(400).json({ error: "El segmento es manual/personalizado: no hay destinatarios calculables automáticamente." });
+    }
+    // Solo con teléfono y sin opt-out explícito.
+    const eligible = matched.filter((p) => p.phone && p.marketing_consent !== false);
 
-    // Citas por paciente (para tratamiento e inactivos).
-    const apptsByPatient = {};
-    if (wantTrat || wantInact) {
-      const { data: appts } = await supabase
-        .from("df_appointments").select("patient_id, treatment_id, starts_at").neq("status", "cancelled");
-      for (const a of appts || []) {
-        if (!a.patient_id) continue;
-        (apptsByPatient[a.patient_id] = apptsByPatient[a.patient_id] || []).push(a);
-      }
-    }
-    // Pagos pendientes (aproximación de "presupuestos no aceptados").
-    const pendingByPatient = {};
-    if (wantPresu) {
-      const { data: pays } = await supabase.from("df_patient_payments").select("patient_id, paid");
-      for (const p of pays || []) { if (!p.paid && p.patient_id) pendingByPatient[p.patient_id] = true; }
-    }
-    const INACT_MONTHS = 6;
-    const inactCutoff = new Date(now.getFullYear(), now.getMonth() - INACT_MONTHS, now.getDate()).getTime();
-    const treatSet = new Set(treatments);
+    // Excluye a quien ya se haya INTENTADO (enviado o fallado) en esta campaña.
+    const { data: already } = await supabase
+      .from("df_campaign_recipients").select("patient_id").eq("campaign_id", campaign.id);
+    const attempted = new Set((already || []).map((r) => r.patient_id));
+    const pending = eligible.filter((p) => !attempted.has(p.id));
+    const batch = pending.slice(0, BATCH);
 
-    let count = 0, withPhone = 0;
-    for (const pt of patients || []) {
-      let match = false;
-      if (wantEdad && ageRanges.length) {
-        const age = ageOf(pt.birth_date);
-        if (age != null && ageRanges.some((r) => {
-          const min = r.min != null ? Number(r.min) : 0;
-          const max = r.max != null ? Number(r.max) : min;
-          return age >= min && age <= max;
-        })) match = true;
-      }
-      if (!match && wantTrat && treatSet.size) {
-        const list = apptsByPatient[pt.id] || [];
-        if (list.some((a) => a.treatment_id && treatSet.has(String(a.treatment_id)))) match = true;
-      }
-      if (!match && wantInact) {
-        const list = apptsByPatient[pt.id] || [];
-        const last = list.reduce((mx, a) => Math.max(mx, Date.parse(a.starts_at) || 0), 0);
-        if (!last || last < inactCutoff) match = true;
-      }
-      if (!match && wantPresu && pendingByPatient[pt.id]) match = true;
-      if (match) { count++; if (pt.phone) withPhone++; }
+    let sent = 0, failed = 0;
+    for (let i = 0; i < batch.length; i += CONCURRENCY) {
+      const slice = batch.slice(i, i + CONCURRENCY);
+      await Promise.all(slice.map(async (pt) => {
+        const firstName = String(pt.full_name || "").trim().split(/\s+/)[0] || "";
+        const params = tplInfo.bodyVarCount === 1 ? [firstName || "paciente"] : [];
+        try {
+          await wa.sendTemplate(pt.phone, templateName, tplInfo.language, params);
+          sent++;
+          await supabase.from("df_campaign_recipients").insert({ campaign_id: campaign.id, patient_id: pt.id, status: "sent", sent_at: new Date().toISOString() }).then(() => {}, () => {});
+        } catch (_e) {
+          failed++;
+          await supabase.from("df_campaign_recipients").insert({ campaign_id: campaign.id, patient_id: pt.id, status: "failed" }).then(() => {}, () => {});
+        }
+      }));
     }
-    return res.json({ count, withPhone });
+
+    const remaining = Math.max(0, pending.length - batch.length);
+    // Si ya no queda nadie por intentar, la campaña queda ENVIADA.
+    if (remaining === 0) {
+      await supabase.from("df_campaigns").update({ status: "sent", sent_at: new Date().toISOString() }).eq("id", campaign.id);
+    }
+    return res.json({
+      sent, failed, remaining,
+      totalEligible: eligible.length,
+      skippedNoPhoneOrOptOut: matched.length - eligible.length,
+      done: remaining === 0,
+    });
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }

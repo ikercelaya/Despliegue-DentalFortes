@@ -2189,6 +2189,7 @@ async function renderMarketing() {
               <td>${c.scheduled_at ? fmtDateTime(c.scheduled_at) : "—"}</td>
               <td>${c.sent_at ? fmtDateTime(c.sent_at) : "—"}</td>
               <td style="white-space:nowrap;text-align:right">
+                ${c.status !== "sent" && c.status !== "cancelled" ? `<button class="btn primary" style="padding:5px 10px;font-size:12px;margin-right:6px" onclick="sendCampaign('${c.id}')">Enviar ahora</button>` : ""}
                 <button class="btn" style="padding:5px 10px;font-size:12px" onclick="showCampaignDetails('${c.id}')">Ver detalles</button>
                 <button class="btn danger" style="padding:5px 10px;font-size:12px;margin-left:6px" onclick="deleteCampaign('${c.id}')">Eliminar</button>
               </td>
@@ -2215,6 +2216,27 @@ window.deleteCampaign = async function (id) {
   try {
     await api(`/api/campaigns/${id}`, { method: "DELETE" });
     toast("Campaña eliminada", "success");
+    closeModal();
+    renderMarketing();
+  } catch (err) { toast(err.message, "error"); }
+};
+
+// Envío MANUAL "ahora": manda la plantilla por WhatsApp a los pacientes del segmento.
+window.sendCampaign = async function (id) {
+  const c = campaignsCache[id];
+  if (!c) return;
+  const msg = c.status === "sent"
+    ? `Esta campaña ya figura como enviada. ¿Enviar a los pacientes que aún falten (si los hay)?`
+    : `¿Enviar la campaña "${c.name}" AHORA por WhatsApp a los pacientes del segmento?\n\nSe enviarán mensajes reales.`;
+  if (!confirm(msg)) return;
+  try {
+    toast("Enviando… no cierres la ventana");
+    const r = await api(`/api/campaigns/${id}/send`, { method: "POST" });
+    let out = `Enviados: ${r.sent}` + (r.failed ? ` · Fallidos: ${r.failed}` : "");
+    if (r.remaining > 0) out += ` · Quedan ${r.remaining} (pulsa "Enviar ahora" otra vez para continuar)`;
+    if (r.skippedNoPhoneOrOptOut) out += ` · ${r.skippedNoPhoneOrOptOut} sin teléfono o dados de baja`;
+    if (!r.sent && !r.failed && r.remaining === 0) out = "No había destinatarios pendientes con teléfono.";
+    toast(out, r.failed && !r.sent ? "error" : "success");
     closeModal();
     renderMarketing();
   } catch (err) { toast(err.message, "error"); }
@@ -2251,6 +2273,7 @@ window.showCampaignDetails = function (id) {
     </div>
     <div class="actions">
       <button class="btn danger" style="margin-right:auto" onclick="deleteCampaign('${c.id}')">Eliminar</button>
+      ${c.status !== "sent" && c.status !== "cancelled" ? `<button class="btn primary" onclick="sendCampaign('${c.id}')">Enviar ahora</button>` : ""}
       <button class="btn" onclick="closeModal()">Cerrar</button>
     </div>
   `);
