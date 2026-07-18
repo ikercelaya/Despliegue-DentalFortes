@@ -1761,6 +1761,7 @@ app.post("/api/campaigns", requireAuth, async (req, res) => {
       segments,
       treatments: Array.isArray(b.treatments) ? b.treatments : (baseConfig.treatments || []),
       age_ranges: Array.isArray(b.age_ranges) ? b.age_ranges : (baseConfig.age_ranges || []),
+      manual_patient_ids: Array.isArray(b.manual_patient_ids) ? b.manual_patient_ids : (baseConfig.manual_patient_ids || []),
       custom_segments: customSegments,
       template_name: templateName,
     };
@@ -1799,12 +1800,17 @@ app.patch("/api/campaigns/:id", requireAuth, async (req, res) => {
 // con criterio automático: edad, tratamiento, inactivos, presupuestos). Devuelve la lista
 // de pacientes coincidentes con sus datos. Lo usan la previsualización y el envío, para que
 // el "N seleccionados" y a quién se envía sean SIEMPRE lo mismo.
-async function matchCampaignPatients({ segments = [], treatments = [], ageRanges = [] }) {
+async function matchCampaignPatients({ segments = [], treatments = [], ageRanges = [], manualPatientIds = [] }) {
   const wantEdad = segments.includes("por_edad");
   const wantTrat = segments.includes("por_tratamiento");
   const wantInact = segments.includes("inactivos");
   const wantPresu = segments.includes("presupuestos_no_aceptados");
-  if (!(wantEdad || wantTrat || wantInact || wantPresu)) return null; // solo manual/personalizado
+  const manualIds = (manualPatientIds || []).map((x) => String(x)).filter(Boolean);
+  const manualSet = new Set(manualIds);
+  const hasManual = manualSet.size > 0;
+  // Si no hay ningún criterio (ni segmento automático ni pacientes elegidos a mano), no se
+  // puede contar/enviar automáticamente.
+  if (!(wantEdad || wantTrat || wantInact || wantPresu || hasManual)) return null;
 
   const { data: patients } = await supabase
     .from("df_patients").select("id, full_name, birth_date, phone, marketing_consent");
@@ -1857,6 +1863,8 @@ async function matchCampaignPatients({ segments = [], treatments = [], ageRanges
       if (!last || last < inactCutoff) match = true;
     }
     if (!match && wantPresu && pendingByPatient[pt.id]) match = true;
+    // Pacientes elegidos a mano (segmento manual).
+    if (!match && manualSet.has(String(pt.id))) match = true;
     if (match) matched.push(pt);
   }
   return matched;
@@ -1872,6 +1880,7 @@ function campaignSegmentInput(campaign) {
     segments,
     treatments: Array.isArray(cfg.treatments) ? cfg.treatments : [],
     ageRanges: Array.isArray(cfg.age_ranges) ? cfg.age_ranges : [],
+    manualPatientIds: Array.isArray(cfg.manual_patient_ids) ? cfg.manual_patient_ids : [],
   };
 }
 
@@ -1884,6 +1893,7 @@ app.post("/api/campaigns/preview", requireAuth, async (req, res) => {
       segments: Array.isArray(b.segments) ? b.segments.map((s) => String(s)) : [],
       treatments: Array.isArray(b.treatments) ? b.treatments : [],
       ageRanges: Array.isArray(b.age_ranges) ? b.age_ranges : [],
+      manualPatientIds: Array.isArray(b.manual_patient_ids) ? b.manual_patient_ids : [],
     });
     if (matched == null) return res.json({ count: null, withPhone: null, manualOnly: true });
     const withPhone = matched.filter((p) => p.phone).length;

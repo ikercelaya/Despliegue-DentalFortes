@@ -2248,6 +2248,7 @@ window.showCampaignDetails = function (id) {
   const cfg = c.segment_config || {};
   const treatments = Array.isArray(cfg.treatments) ? cfg.treatments : [];
   const ageRanges = Array.isArray(cfg.age_ranges) ? cfg.age_ranges : [];
+  const manualIds = Array.isArray(cfg.manual_patient_ids) ? cfg.manual_patient_ids : [];
   const row = (label, val) => `<div style="display:flex;justify-content:space-between;gap:16px;padding:9px 0;border-bottom:1px solid var(--line)">
     <span style="color:var(--text-3);font-size:13px">${label}</span>
     <span style="color:var(--text);font-weight:600;font-size:13px;text-align:right">${val}</span></div>`;
@@ -2263,7 +2264,8 @@ window.showCampaignDetails = function (id) {
       ${row("Nombre", escapeHtml(c.name))}
       ${row("Segmentos", escapeHtml(campaignSegLabel(c)))}
       ${treatments.length ? row("Tratamientos", escapeHtml(treatments.join(", "))) : ""}
-      ${ageRanges.length ? row("Rangos de edad", escapeHtml(ageRanges.join(", "))) : ""}
+      ${ageRanges.length ? row("Rangos de edad", escapeHtml(ageRanges.map(r => r && typeof r === "object" ? `${r.min}${r.max != null && r.max !== r.min ? "–" + r.max : ""}` : r).join(", "))) : ""}
+      ${manualIds.length ? row("Pacientes elegidos a mano", manualIds.length) : ""}
       ${row("Plantilla de Meta", c.message_template ? escapeHtml(c.message_template) : "—")}
       ${row("Estado", escapeHtml(CAMPAIGN_STATUS_LABEL[c.status] || c.status))}
       ${row("Entrega", entrega)}
@@ -2285,7 +2287,7 @@ const STD_SEGMENTS = [
   { key: "por_edad", label: "Por edad", desc: "Edades o rangos", detail: "age" },
   { key: "por_tratamiento", label: "Por tratamiento", desc: "1 o varios", detail: "treat" },
   { key: "presupuestos_no_aceptados", label: "Presupuestos no aceptados", desc: "Pendientes" },
-  { key: "manual", label: "Segmento manual", desc: "Selección a mano" },
+  { key: "manual", label: "Segmento manual", desc: "Elige pacientes concretos", detail: "manual" },
 ];
 function getCustomSegments() { try { return JSON.parse(localStorage.getItem("df_custom_segments") || "[]"); } catch { return []; } }
 function setCustomSegments(a) { localStorage.setItem("df_custom_segments", JSON.stringify(a)); }
@@ -2335,6 +2337,7 @@ function openCampaignModal() {
     </div>
   `, { onMount: (body) => {
     const ageRanges = [];
+    const manualPatients = []; // pacientes elegidos a mano (segmento manual)
 
     function wireSeg(item) {
       const chk = item.querySelector(".seg-chk");
@@ -2357,13 +2360,16 @@ function openCampaignModal() {
       const segments = [...body.querySelectorAll(".seg-chk:checked")].map(c => c.dataset.seg);
       if (!segments.length) { box.innerHTML = ""; return; }
       const treatments = [...body.querySelectorAll(".treat-chk:checked")].map(c => c.value);
-      if (!segments.some(s => AUTO_SEGS.includes(s))) {
-        box.innerHTML = `<span class="cmp-preview-note">Segmento manual/personalizado: los destinatarios se eligen a mano.</span>`;
+      const manualIds = manualPatients.map(p => p.id);
+      const countable = segments.some(s => AUTO_SEGS.includes(s)) || manualIds.length > 0;
+      if (!countable) {
+        const onlyManual = segments.includes("manual") && segments.every(s => s === "manual");
+        box.innerHTML = `<span class="cmp-preview-note">${onlyManual ? "Añade pacientes concretos abajo para el segmento manual." : "Segmento personalizado: los destinatarios se eligen a mano."}</span>`;
         return;
       }
       box.innerHTML = `<span class="cmp-preview-note">Calculando destinatarios…</span>`;
       try {
-        const r = await api("/api/campaigns/preview", { method: "POST", body: { segments, treatments, age_ranges: ageRanges } });
+        const r = await api("/api/campaigns/preview", { method: "POST", body: { segments, treatments, age_ranges: ageRanges, manual_patient_ids: manualIds } });
         if (r.manualOnly || r.count == null) {
           box.innerHTML = `<span class="cmp-preview-note">Segmento manual: los destinatarios se eligen a mano.</span>`;
           return;
@@ -2417,6 +2423,47 @@ function openCampaignModal() {
           renderChips();
           debouncedPreview();
         };
+      } else if (detail.dataset.detail === "manual") {
+        detail.innerHTML = `
+          <div style="width:100%;position:relative">
+            <input class="input" id="manualSearch" placeholder="Busca por nombre o teléfono y añade pacientes…" autocomplete="off" style="width:100%">
+            <div id="manualSuggest" style="background:var(--bg-2);border:1px solid var(--line);border-radius:6px;margin-top:4px;max-height:170px;overflow-y:auto;display:none;position:absolute;left:0;right:0;z-index:5"></div>
+          </div>
+          <div class="chips" id="manualChips" style="width:100%"></div>`;
+        const search = detail.querySelector("#manualSearch");
+        const suggest = detail.querySelector("#manualSuggest");
+        const chips = detail.querySelector("#manualChips");
+        const renderManualChips = () => {
+          chips.innerHTML = manualPatients.map((p, i) => `
+            <span class="chip">${escapeHtml(p.full_name)}${p.phone ? ` · ${escapeHtml(fmtPhone(p.phone) || p.phone)}` : ' · sin tel.'}
+              <button type="button" data-i="${i}">×</button></span>`).join("");
+          chips.querySelectorAll("button").forEach(b => b.onclick = () => { manualPatients.splice(+b.dataset.i, 1); renderManualChips(); debouncedPreview(); });
+        };
+        let mTimer;
+        search.addEventListener("input", () => {
+          clearTimeout(mTimer);
+          const q = search.value.trim();
+          if (q.length < 2) { suggest.style.display = "none"; return; }
+          mTimer = setTimeout(async () => {
+            try {
+              const { patients } = await api(`/api/patients?q=${encodeURIComponent(q)}&limit=10`);
+              if (!patients.length) { suggest.innerHTML = `<div style="padding:8px 10px;color:var(--text-3);font-size:13px">Sin resultados</div>`; suggest.style.display = "block"; return; }
+              suggest.innerHTML = patients.map(p => `<div style="padding:8px 10px;cursor:pointer;border-bottom:1px solid var(--line);font-size:13px"
+                data-id="${p.id}" data-name="${escapeHtml(p.full_name)}" data-phone="${escapeHtml(p.phone || "")}">
+                <strong>${escapeHtml(p.full_name)}</strong> <span style="color:var(--text-3)">${escapeHtml(fmtPhone(p.phone) || "sin teléfono")}</span></div>`).join("");
+              suggest.style.display = "block";
+            } catch (_e) {}
+          }, 250);
+        });
+        suggest.addEventListener("click", (e) => {
+          const it = e.target.closest("[data-id]");
+          if (!it || !it.dataset.id) return;
+          if (!manualPatients.some(p => p.id === it.dataset.id)) {
+            manualPatients.push({ id: it.dataset.id, full_name: it.dataset.name, phone: it.dataset.phone || null });
+            renderManualChips(); debouncedPreview();
+          }
+          search.value = ""; suggest.style.display = "none";
+        });
       }
     }
 
@@ -2478,6 +2525,7 @@ function openCampaignModal() {
           segments,
           treatments,
           age_ranges: ageRanges,
+          manual_patient_ids: manualPatients.map(p => p.id),
           template_name: body.querySelector("#cmpTemplate").value,
           scheduled_at: scheduledRaw ? new Date(scheduledRaw).toISOString() : null,
         }});
