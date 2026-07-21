@@ -10,7 +10,22 @@ const express = require("express");
 
 const { supabase } = require("./lib/db");
 const { issueToken, checkPassword, requireAuth } = require("./lib/auth");
-const { assignCabinet, CAPACITY_REASONS } = require("./lib/scheduling");
+const { assignCabinet, CAPACITY_REASONS, localWeekdayAndTime, withinBookingWindow } = require("./lib/scheduling");
+
+// Día de la semana (0=lunes..6=domingo) y hora "HH:MM" en zona horaria de Madrid a partir
+// de una fecha/ISO (que puede venir en UTC). Se usa para validar el horario de reserva.
+function madridWeekdayAndTime(iso) {
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return null;
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Europe/Madrid", weekday: "short", hour: "2-digit", minute: "2-digit", hour12: false,
+  }).formatToParts(d);
+  const m = {};
+  for (const p of parts) m[p.type] = p.value;
+  const WD = { Mon: 0, Tue: 1, Wed: 2, Thu: 3, Fri: 4, Sat: 5, Sun: 6 };
+  const hh = m.hour === "24" ? "00" : m.hour;
+  return { weekday: WD[m.weekday], hhmm: `${hh}:${m.minute}` };
+}
 const { ensurePaymentForAppointment } = require("./lib/billing");
 
 const app = express();
@@ -727,6 +742,14 @@ app.post("/api/appointments", requireAuth, async (req, res) => {
     const isFirstVisit = !!body.is_first_visit;
     let cabinet = body.cabinet != null ? Number(body.cabinet) : null;
 
+    // Horario límite de reserva: 19:00 (L-J) y 13:45 (V). El personal puede forzar.
+    if (!body.force) {
+      const wt = madridWeekdayAndTime(body.starts_at);
+      if (wt && !withinBookingWindow(wt.weekday, wt.hhmm)) {
+        return res.status(409).json({ error: "Fuera de horario de reserva: la última cita es a las 19:00 (lunes a jueves) y 13:45 (viernes), y no se agenda sábados ni domingos. Marca 'Forzar' si quieres agendarla igualmente.", reason: "fuera_horario" });
+      }
+    }
+
     // Capacidad y gabinete (reglas de agenda). El personal puede forzar con force:true.
     if (!body.force) {
       const cap = await assignCabinet({
@@ -811,6 +834,13 @@ app.patch("/api/appointments/:id", requireAuth, async (req, res) => {
         if (changed) {
           const startISO = patch.starts_at || cur.starts_at;
           const endISO = patch.ends_at || cur.ends_at;
+          // Horario límite de reserva (19:00 L-J, 13:45 V) también al mover una cita.
+          if ("starts_at" in patch) {
+            const wt = madridWeekdayAndTime(startISO);
+            if (wt && !withinBookingWindow(wt.weekday, wt.hhmm)) {
+              return res.status(409).json({ error: "Fuera de horario de reserva: la última cita es a las 19:00 (lunes a jueves) y 13:45 (viernes). Marca 'Forzar' para agendarla igualmente.", reason: "fuera_horario" });
+            }
+          }
           const isFV = "is_first_visit" in patch ? !!patch.is_first_visit : !!cur.is_first_visit;
           const proId = "professional_id" in patch ? (patch.professional_id || null) : cur.professional_id;
           const desired = "cabinet" in patch ? patch.cabinet : cur.cabinet;
@@ -909,18 +939,79 @@ app.get("/api/billing", requireAuth, async (req, res) => {
       .select("id, amount_eur, paid, paid_at, concept, patient_id, df_patients(full_name)")
       .eq("paid", true)
       .order("paid_at", { ascending: false });
-    const rows = (pays || []).filter((p) => {
+    const dayPays = (pays || []).filter((p) => {
       const t = Date.parse(p.paid_at || "");
       return isFinite(t) && t >= dayStart && t < dayEnd;
-    }).map((p) => ({
+    });
+    const rows = dayPays.map((p) => ({
       id: p.id,
       patient: p.df_patients?.full_name || "—",
+      patient_id: p.patient_id || null,
       treatment: p.concept || "—",
       amount: Number(p.amount_eur) || 0,
       paid_at: p.paid_at,
     }));
-    const total = rows.reduce((s, r) => s + r.amount, 0);
-    return res.json({ date: dateStr, total: Math.round((total + Number.EPSILON) * 100) / 100, count: rows.length, rows });
+    const round2 = (n) => Math.round((n + Number.EPSILON) * 100) / 100;
+    const total = round2(rows.reduce((s, r) => s + r.amount, 0));
+    // Nº de pacientes distintos (los sin ficha cuentan por nombre) y nº de tratamientos.
+    const patientKeys = new Set(rows.map((r) => r.patient_id || ("name:" + r.patient)));
+    // Caja inicial guardada para ese día (df_settings). Caja final = inicial + facturación.
+    const { data: ci } = await supabase.from("df_settings").select("value").eq("key", "cash_initial:" + dateStr).maybeSingle();
+    const cajaInicial = ci && ci.value && Number.isFinite(Number(ci.value.amount)) ? Number(ci.value.amount) : 0;
+    return res.json({
+      date: dateStr,
+      total,
+      count: rows.length,
+      numPatients: patientKeys.size,
+      numTreatments: rows.length,
+      cajaInicial: round2(cajaInicial),
+      cajaFinal: round2(cajaInicial + total),
+      rows,
+    });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// Solicitudes de cancelación (las genera el bot; recepción las gestiona a mano).
+app.get("/api/cancellations", requireAuth, async (_req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from("df_cancellation_requests")
+      .select("*, df_patients(full_name, phone), df_appointments(starts_at, df_treatments(name), df_professionals(name))")
+      .eq("status", "pending")
+      .order("created_at", { ascending: false });
+    if (error) throw error;
+    return res.json({ cancellations: data || [] });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+app.patch("/api/cancellations/:id", requireAuth, async (req, res) => {
+  try {
+    const status = req.body?.status === "handled" ? "handled" : "pending";
+    const { error } = await supabase.from("df_cancellation_requests")
+      .update({ status, handled_at: status === "handled" ? new Date().toISOString() : null })
+      .eq("id", req.params.id);
+    if (error) throw error;
+    return res.json({ ok: true });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// Establece la caja inicial de un día (df_settings). La caja final se recalcula sola.
+app.put("/api/billing/caja-inicial", requireAuth, async (req, res) => {
+  try {
+    const dateStr = String(req.body?.date || "").slice(0, 10);
+    const amount = Number(req.body?.amount);
+    if (!dateStr) return res.status(400).json({ error: "Falta la fecha." });
+    if (!Number.isFinite(amount) || amount < 0) return res.status(400).json({ error: "Importe no válido." });
+    const { error } = await supabase.from("df_settings")
+      .upsert({ key: "cash_initial:" + dateStr, value: { amount }, updated_at: new Date().toISOString() }, { onConflict: "key" });
+    if (error) throw error;
+    return res.json({ date: dateStr, cajaInicial: amount });
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }

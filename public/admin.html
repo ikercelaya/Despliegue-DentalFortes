@@ -247,10 +247,16 @@ table tr.row-click { cursor: pointer; }
 .agenda-grid .head { background: #FBFBFD; padding: 8px 6px; text-align: center; font-size: 12px; font-weight: 700; color: var(--text-2); }
 .agenda-grid .hour { background: #fff; padding: 6px 6px 0; text-align: right; font-size: 11px; color: var(--text-3); font-variant-numeric: tabular-nums; }
 .agenda-grid .cell { background: #fff; min-height: 36px; position: relative; padding: 2px; display: flex; flex-direction: column; gap: 2px; }
-.appt { background: #EEF3FC; border-left: 3px solid var(--accent-2); border-radius: 7px; padding: 3px 7px;
+.appt { position: relative; background: #EEF3FC; border-left: 3px solid var(--accent-2); border-radius: 7px; padding: 3px 7px;
   font-size: 11px; line-height: 1.2; cursor: pointer; transition: filter .15s, transform .15s; overflow: hidden; }
 .appt:hover { filter: brightness(.98); transform: translateY(-1px); }
-.appt strong { display: block; font-size: 11px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.appt-edit { position: absolute; top: 2px; right: 2px; width: 20px; height: 20px; padding: 0; display: inline-flex;
+  align-items: center; justify-content: center; border: 0; border-radius: 6px; background: rgba(255,255,255,.75);
+  color: var(--accent); cursor: pointer; opacity: 0; transition: opacity .12s; }
+.appt-edit svg { width: 12px; height: 12px; }
+.appt:hover .appt-edit { opacity: 1; }
+.appt-edit:hover { background: #fff; }
+.appt strong { display: block; font-size: 11px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding-right: 16px; }
 .appt .meta { display: block; color: var(--text-3); font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* Cita confirmada: tinte verde suave + tick para verlo de un vistazo */
 .appt.confirmed { background: #E7F7F0; }
@@ -336,6 +342,38 @@ table td, .agenda-grid .hour { font-variant-numeric: tabular-nums; }
 .kb-meta { font-size:12px; color:var(--text-3); margin-top:2px; }
 /* Previsualización de plantilla estilo WhatsApp */
 .wa-preview { background:#E7F7DE; border:1px solid #CDE9C0; border-radius:12px; border-top-left-radius:3px; padding:12px 14px; font-size:14px; line-height:1.5; color:#1F2A22; box-shadow:var(--shadow-sm); max-width:420px; }
+/* Facturación: calendario + totales de caja */
+.bill-layout { display:grid; grid-template-columns:300px 1fr; gap:18px; align-items:start; }
+@media (max-width:860px){ .bill-layout { grid-template-columns:1fr; } }
+.cal-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; font-weight:700; color:var(--text); }
+.cal-nav { width:30px; height:30px; border:1px solid var(--line-2); background:#fff; border-radius:8px; cursor:pointer; color:var(--text-2); font-size:16px; }
+.cal-nav:hover { background:var(--bg-2); }
+.cal-grid { display:grid; grid-template-columns:repeat(7,1fr); gap:4px; }
+.cal-wd { text-align:center; font-size:11px; font-weight:700; color:var(--text-3); padding:4px 0; }
+.cal-cell { text-align:center; padding:8px 0; font-size:13px; border-radius:8px; cursor:pointer; color:var(--text-2); font-variant-numeric:tabular-nums; }
+.cal-cell:hover { background:var(--bg-2); }
+.cal-empty { visibility:hidden; cursor:default; }
+.cal-today { border:1px solid var(--accent-2); color:var(--accent); font-weight:700; }
+.cal-sel { background:var(--silver); color:#fff; font-weight:700; }
+.cal-sel:hover { background:var(--silver); filter:brightness(.97); }
+.cash-row { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; }
+.cash-row-2 { grid-template-columns:repeat(2,1fr); }
+.cash-box { background:var(--surface,#fff); border:1px solid var(--line-2); border-radius:12px; padding:13px 15px; box-shadow:var(--shadow-sm); }
+.cash-box.cash-final { background:#E7F7F0; border-color:#BEE7D8; }
+.cash-lbl { font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.4px; color:var(--text-3); margin-bottom:7px; }
+.cash-val { font-size:22px; font-weight:800; color:var(--text); font-variant-numeric:tabular-nums; }
+.cash-box.cash-final .cash-val { color:var(--success); }
+.cash-input { font-size:20px; font-weight:800; padding:4px 8px; }
+/* Aviso llamativo de solicitudes de cancelación en la agenda */
+.cancel-alert { background:#FCE9EC; border:1.5px solid var(--danger); border-radius:14px; padding:14px 16px; margin-bottom:16px; box-shadow:0 6px 18px -8px rgba(214,91,119,.5); animation:cancelPulse 2s ease-in-out infinite; }
+@keyframes cancelPulse { 0%,100%{ box-shadow:0 6px 18px -8px rgba(214,91,119,.45);} 50%{ box-shadow:0 6px 22px -6px rgba(214,91,119,.75);} }
+@media (prefers-reduced-motion: reduce){ .cancel-alert { animation:none; } }
+.cancel-alert-head { display:flex; align-items:center; gap:9px; color:var(--danger); font-size:14px; margin-bottom:8px; flex-wrap:wrap; }
+.cancel-alert-head span:last-child { color:var(--text-2); font-weight:500; }
+.cancel-alert-bang { display:inline-flex; align-items:center; justify-content:center; width:22px; height:22px; border-radius:50%; background:var(--danger); color:#fff; font-weight:900; font-size:14px; flex-shrink:0; }
+.cancel-item { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:9px 0; border-top:1px solid rgba(214,91,119,.25); flex-wrap:wrap; }
+.cancel-name { font-weight:700; color:var(--text); font-size:13.5px; }
+.cancel-meta { font-size:12px; color:var(--text-3); margin-top:2px; }
 /* Editor de variables de plantilla (variable | valor) */
 .tpl-var-rows { display:flex; flex-direction:column; gap:8px; }
 .tpl-var-rows:empty { display:none; }
@@ -1223,40 +1261,87 @@ function todayStr() {
   const p = (n) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`;
 }
-async function renderBilling(dateStr) {
+const BILL_MONTHS = ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];
+function buildBillCalendar(year, month, selectedDate) {
+  const pad = (n) => String(n).padStart(2, "0");
+  const startWd = (new Date(year, month - 1, 1).getDay() + 6) % 7; // 0=lunes
+  const daysInMonth = new Date(year, month, 0).getDate();
+  const today = todayStr();
+  let cells = "";
+  for (let i = 0; i < startWd; i++) cells += `<div class="cal-cell cal-empty"></div>`;
+  for (let d = 1; d <= daysInMonth; d++) {
+    const ds = `${year}-${pad(month)}-${pad(d)}`;
+    let cls = "cal-cell";
+    if (ds === selectedDate) cls += " cal-sel";
+    else if (ds === today) cls += " cal-today";
+    cells += `<div class="${cls}" onclick="renderBilling('${ds}','${year}-${pad(month)}')">${d}</div>`;
+  }
+  const prev = month === 1 ? `${year - 1}-12` : `${year}-${pad(month - 1)}`;
+  const next = month === 12 ? `${year + 1}-01` : `${year}-${pad(month + 1)}`;
+  return `
+    <div class="cal-head">
+      <button class="cal-nav" onclick="renderBilling('${selectedDate}','${prev}')">‹</button>
+      <span>${BILL_MONTHS[month - 1]} ${year}</span>
+      <button class="cal-nav" onclick="renderBilling('${selectedDate}','${next}')">›</button>
+    </div>
+    <div class="cal-grid">
+      ${["Lu","Ma","Mi","Ju","Vi","Sá","Do"].map(d => `<div class="cal-wd">${d}</div>`).join("")}
+      ${cells}
+    </div>`;
+}
+async function renderBilling(dateStr, viewMonthStr) {
   const date = dateStr || todayStr();
+  const [vy, vm] = (viewMonthStr || date.slice(0, 7)).split("-").map(Number);
+  const prettyDate = new Date(date + "T00:00:00").toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
   $main.innerHTML = `
-    <div class="page-header">
-      <h2>Facturación</h2>
-      <div class="actions" style="display:flex;gap:10px;align-items:center">
-        <label style="font-size:12px;color:var(--text-3)">Día</label>
-        <input class="input" type="date" id="billDate" value="${date}" style="max-width:170px" />
+    <div class="page-header"><h2>Facturación</h2></div>
+    <div class="bill-layout">
+      <div class="card fade-up" id="billCalCard">${buildBillCalendar(vy, vm, date)}</div>
+      <div>
+        <div style="font-size:13px;color:var(--text-3);text-transform:capitalize;margin-bottom:10px">${prettyDate}</div>
+        <div class="cash-row">
+          <div class="cash-box"><div class="cash-lbl">Caja inicial</div>
+            <input class="input cash-input" type="number" step="0.01" min="0" id="cajaInicial" placeholder="0,00" /></div>
+          <div class="cash-box"><div class="cash-lbl">Facturación diaria</div><div class="cash-val" id="cajaFact">…</div></div>
+          <div class="cash-box cash-final"><div class="cash-lbl">Caja final</div><div class="cash-val" id="cajaFinal">…</div></div>
+        </div>
+        <div class="cash-row cash-row-2" style="margin-top:12px">
+          <div class="cash-box"><div class="cash-lbl">Nº de pacientes</div><div class="cash-val" id="billNumPatients">…</div></div>
+          <div class="cash-box"><div class="cash-lbl">Tratamientos realizados</div><div class="cash-val" id="billNumTreat">…</div></div>
+        </div>
+        <div class="card" id="billList" style="margin-top:14px"><div class="empty-state">Cargando…</div></div>
       </div>
     </div>
-    <div class="card kpi accent-green fade-up" style="max-width:340px;margin-bottom:16px">
-      <div class="val" id="billTotal">…</div>
-      <div class="lbl">Facturación del día</div>
-      <div class="sub" id="billCount"></div>
-    </div>
-    <div class="card" id="billList"><div class="empty-state">Cargando…</div></div>
   `;
-  document.getElementById("billDate").addEventListener("change", (e) => renderBilling(e.target.value));
   try {
     const b = await api(`/api/billing?date=${encodeURIComponent(date)}`);
-    document.getElementById("billTotal").textContent = fmtEur(b.total);
-    document.getElementById("billCount").textContent = `${b.count} cobro${b.count === 1 ? "" : "s"}`;
+    const dailyTotal = b.total || 0;
+    document.getElementById("cajaFact").textContent = fmtEur(dailyTotal);
+    document.getElementById("billNumPatients").textContent = b.numPatients;
+    document.getElementById("billNumTreat").textContent = b.numTreatments;
+    const ciInput = document.getElementById("cajaInicial");
+    const finalEl = document.getElementById("cajaFinal");
+    const recalcFinal = () => { finalEl.textContent = fmtEur((Number(ciInput.value) || 0) + dailyTotal); };
+    ciInput.value = b.cajaInicial != null ? b.cajaInicial : 0;
+    recalcFinal();
+    ciInput.addEventListener("input", recalcFinal);
+    ciInput.addEventListener("change", async () => {
+      const amount = Number(ciInput.value) || 0;
+      try { await api("/api/billing/caja-inicial", { method: "PUT", body: { date, amount } }); recalcFinal(); }
+      catch (err) { toast(err.message, "error"); }
+    });
     document.getElementById("billList").innerHTML = b.rows.length ? `
       <table>
         <thead><tr><th>Paciente</th><th>Tratamiento</th><th>Hora</th><th style="text-align:right">Importe</th></tr></thead>
         <tbody>
-          ${b.rows.map(r => `<tr>
+          ${b.rows.map(r => `<tr${r.patient_id ? ` class="row-click" onclick="location.hash='patient/${r.patient_id}'"` : ""}>
             <td><strong>${escapeHtml(r.patient)}</strong></td>
             <td>${escapeHtml(r.treatment)}</td>
             <td>${r.paid_at ? new Date(r.paid_at).toLocaleTimeString("es-ES",{hour:"2-digit",minute:"2-digit"}) : "—"}</td>
             <td style="text-align:right;font-weight:700">${fmtEur(r.amount)}</td>
           </tr>`).join("")}
         </tbody>
-        <tfoot><tr><td colspan="3" style="text-align:right;font-weight:700">Total</td><td style="text-align:right;font-weight:800;color:var(--success)">${fmtEur(b.total)}</td></tr></tfoot>
+        <tfoot><tr><td colspan="3" style="text-align:right;font-weight:700">Total</td><td style="text-align:right;font-weight:800;color:var(--success)">${fmtEur(dailyTotal)}</td></tr></tfoot>
       </table>`
       : `<div class="empty-state" style="padding:30px">Sin cobros registrados este día.<br><small>Marca citas como pagadas desde la Agenda o la ficha del paciente para que aparezcan aquí.</small></div>`;
   } catch (err) { toast(err.message, "error"); }
@@ -1357,6 +1442,42 @@ async function handleGoogleCalendarDisconnect(professional) {
   }
 }
 
+// ---- Solicitudes de cancelación (aviso llamativo para recepción) ----
+async function loadCancellations() {
+  const box = document.getElementById("cancelBox");
+  if (!box) return;
+  try {
+    const { cancellations } = await api("/api/cancellations");
+    if (!cancellations || !cancellations.length) { box.innerHTML = ""; return; }
+    box.innerHTML = `
+      <div class="cancel-alert">
+        <div class="cancel-alert-head">
+          <span class="cancel-alert-bang">!</span>
+          <strong>${cancellations.length} solicitud${cancellations.length === 1 ? "" : "es"} de cancelación</strong>
+          <span>— contacta con el paciente para gestionarla</span>
+        </div>
+        ${cancellations.map(c => {
+          const nombre = (c.df_patients && c.df_patients.full_name) || c.customer_name || "Paciente";
+          const tel = c.customer_phone || (c.df_patients && c.df_patients.phone) || "";
+          const cita = c.df_appointments
+            ? `Cita: ${fmtDateTime(c.df_appointments.starts_at)}${c.df_appointments.df_treatments ? " · " + c.df_appointments.df_treatments.name : ""}${c.df_appointments.df_professionals ? " · " + c.df_appointments.df_professionals.name : ""}`
+            : "Sin cita futura localizada";
+          return `<div class="cancel-item">
+            <div>
+              <div class="cancel-name">${escapeHtml(nombre)}${tel ? ` · <span style="color:var(--text-2)">${escapeHtml(fmtPhone(tel) || tel)}</span>` : ""}</div>
+              <div class="cancel-meta">${escapeHtml(cita)}${c.reason ? " · Motivo: " + escapeHtml(c.reason) : ""}</div>
+            </div>
+            <button class="btn" onclick="dismissCancellation('${c.id}')">Marcar gestionada</button>
+          </div>`;
+        }).join("")}
+      </div>`;
+  } catch (_e) { box.innerHTML = ""; }
+}
+window.dismissCancellation = async function(id) {
+  try { await api(`/api/cancellations/${id}`, { method: "PATCH", body: { status: "handled" } }); loadCancellations(); }
+  catch (err) { toast(err.message, "error"); }
+};
+
 // ---- Urgencias pendientes (bajo el calendario) ----
 async function loadUrgencias() {
   const box = document.getElementById("urgenciasBox");
@@ -1445,10 +1566,12 @@ async function renderAgenda() {
       ${googleSyncButton}
       ${googleDisconnectButton}
     </div>
+    <div id="cancelBox"></div>
     <div id="agendaContainer"><div class="empty-state">Cargando agenda…</div></div>
     <div style="height:18px"></div>
     <div class="card" id="urgenciasBox"><div class="empty-state">Cargando urgencias…</div></div>
   `;
+  loadCancellations();
   loadUrgencias();
   document.getElementById("prevWeek").onclick = () => { agendaState.weekStart = new Date(ws.getTime() - 7*86400000); renderAgenda(); };
   document.getElementById("nextWeek").onclick = () => { agendaState.weekStart = new Date(ws.getTime() + 7*86400000); renderAgenda(); };
@@ -1515,7 +1638,11 @@ async function renderAgenda() {
             return `<div class="cell">${list.map(a => {
               const color = a.df_professionals?.color || "#9ca3af";
               const confirmed = a.status === "confirmed";
-              return `<div class="appt${confirmed ? " confirmed" : ""}" style="border-left-color:${color}" onclick="openAppointmentModal('${a.id}')"${confirmed ? ' title="Cita confirmada"' : ''}>
+              const pid = a.patient_id || a.df_patients?.id || "";
+              return `<div class="appt${confirmed ? " confirmed" : ""}" style="border-left-color:${color}" ondblclick="${pid ? `location.hash='patient/${pid}'` : `toast('Esta cita no tiene paciente','error')`}" title="Doble clic para abrir la ficha del paciente">
+                <button class="appt-edit" title="Ver/editar cita" onclick="event.stopPropagation(); openAppointmentModal('${a.id}')">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+                </button>
                 <strong>${confirmed ? '<span class="tick">✓</span>' : ''}${fmtTime(a.starts_at)} · ${escapeHtml(a.df_patients?.full_name || "Sin paciente")}</strong>
                 <span class="meta">${escapeHtml(a.df_treatments?.name || "—")} · ${escapeHtml(a.df_professionals?.name?.split(" ")[0] || "")}</span>
               </div>`;
