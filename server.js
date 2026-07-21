@@ -850,6 +850,71 @@ app.delete("/api/appointments/:id", requireAuth, async (req, res) => {
   }
 });
 
+// Marcar una cita como PAGADA: registra (o actualiza) el cobro del tratamiento de esa
+// cita con el importe confirmado. Aparece en Facturación y en la ficha del paciente.
+app.post("/api/appointments/:id/pay", requireAuth, async (req, res) => {
+  try {
+    const { data: appt } = await supabase
+      .from("df_appointments")
+      .select("id, patient_id, treatment_id, df_treatments(name)")
+      .eq("id", req.params.id).maybeSingle();
+    if (!appt) return res.status(404).json({ error: "Cita no encontrada." });
+    if (!appt.patient_id) return res.status(400).json({ error: "La cita no tiene paciente asociado." });
+    const amount = Number(req.body?.amount);
+    if (!Number.isFinite(amount) || amount < 0) return res.status(400).json({ error: "Importe no válido." });
+    const concept = appt.df_treatments?.name || "Cita";
+    const nowISO = new Date().toISOString();
+    // Si ya había un cobro para esta cita, se actualiza; si no, se crea (pagado).
+    const { data: existing } = await supabase
+      .from("df_patient_payments").select("id").eq("appointment_id", appt.id).limit(1).maybeSingle();
+    let payment;
+    if (existing) {
+      const { data, error } = await supabase.from("df_patient_payments")
+        .update({ amount_eur: amount, paid: true, paid_at: nowISO, concept })
+        .eq("id", existing.id).select().single();
+      if (error) throw error;
+      payment = data;
+    } else {
+      const { data, error } = await supabase.from("df_patient_payments")
+        .insert({ patient_id: appt.patient_id, appointment_id: appt.id, amount_eur: amount, paid: true, paid_at: nowISO, concept })
+        .select().single();
+      if (error) throw error;
+      payment = data;
+    }
+    return res.json({ payment });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// Facturación de un día: cobros PAGADOS ese día (paciente, tratamiento, importe) + total.
+app.get("/api/billing", requireAuth, async (req, res) => {
+  try {
+    const dateStr = String(req.query.date || "").slice(0, 10) || new Date().toISOString().slice(0, 10);
+    const dayStart = new Date(dateStr + "T00:00:00.000Z").getTime();
+    const dayEnd = dayStart + 86400000;
+    const { data: pays } = await supabase
+      .from("df_patient_payments")
+      .select("id, amount_eur, paid, paid_at, concept, patient_id, df_patients(full_name)")
+      .eq("paid", true)
+      .order("paid_at", { ascending: false });
+    const rows = (pays || []).filter((p) => {
+      const t = Date.parse(p.paid_at || "");
+      return isFinite(t) && t >= dayStart && t < dayEnd;
+    }).map((p) => ({
+      id: p.id,
+      patient: p.df_patients?.full_name || "—",
+      treatment: p.concept || "—",
+      amount: Number(p.amount_eur) || 0,
+      paid_at: p.paid_at,
+    }));
+    const total = rows.reduce((s, r) => s + r.amount, 0);
+    return res.json({ date: dateStr, total: Math.round((total + Number.EPSILON) * 100) / 100, count: rows.length, rows });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 // =============================================================
 // CONFIRMACIÓN DE CITAS + RECORDATORIOS (cadencia 3 días / 1 día / 6 horas)
 // -------------------------------------------------------------
@@ -1033,12 +1098,15 @@ function fmtOffset(h) {
 async function getReminderConfig() {
   try {
     const { data } = await supabase.from("df_settings").select("value").eq("key", "reminder_cadence").maybeSingle();
-    let offs = data && data.value && data.value.offsets;
+    const val = (data && data.value) || {};
+    const template = typeof val.template === "string" ? val.template : "";
+    let offs = val.offsets;
     if (Array.isArray(offs) && offs.length === 3 && offs.every((n) => Number(n) > 0)) {
-      return { offsets: offs.map(Number).sort((a, b) => b - a) };
+      return { offsets: offs.map(Number).sort((a, b) => b - a), template };
     }
+    return { offsets: DEFAULT_REMINDER_OFFSETS.slice(), template };
   } catch (_e) {}
-  return { offsets: DEFAULT_REMINDER_OFFSETS.slice() };
+  return { offsets: DEFAULT_REMINDER_OFFSETS.slice(), template: "" };
 }
 
 // Tramos [{field, fromH, toH, label}] a partir de los offsets (horas antes de la cita).
@@ -1061,14 +1129,33 @@ function reminderText(appt, _label) {
     `Si no se confirma, el hueco podría liberarse. Gracias.`;
 }
 
+// Envía el recordatorio de una cita: por PLANTILLA de Meta si hay una configurada (rellena
+// {{1}}=nombre, {{2}}=cuándo según cuántas variables tenga), o por texto normal si no.
+async function sendReminderMessage(wa, phone, appt, templateName, tplInfo) {
+  if (templateName && tplInfo) {
+    const nombre = appt.df_patients?.full_name ? String(appt.df_patients.full_name).split(" ")[0] : "paciente";
+    const cuando = new Date(appt.starts_at).toLocaleString("es-ES", {
+      weekday: "long", day: "2-digit", month: "long", hour: "2-digit", minute: "2-digit", timeZone: "Europe/Madrid",
+    });
+    const params = [nombre, cuando].slice(0, tplInfo.bodyVarCount);
+    return wa.sendTemplate(phone, templateName, tplInfo.language, params);
+  }
+  return wa.sendText(phone, reminderText(appt));
+}
+
 async function runReminders() {
   const wa = require("./lib/whatsapp");
   const now = Date.now();
   const iso = (h) => new Date(now + h * 3600000).toISOString();
   const result = { sent: 0, cancelled: 0, processed: 0, errors: [], autoCancelEnabled: AUTO_CANCEL_ENABLED };
 
-  const { offsets } = await getReminderConfig();
+  const { offsets, template } = await getReminderConfig();
   const steps = buildReminderSteps(offsets);
+  // Si hay una plantilla de Meta configurada, cargamos sus datos UNA vez (idioma y nº de
+  // variables) para enviar los recordatorios como plantilla (necesario fuera de la ventana
+  // de 24h). Si falla o no hay plantilla, se cae al texto normal.
+  let remTpl = null;
+  if (template && wa.isConfigured()) { try { remTpl = await fetchApprovedTemplate(template); } catch (_e) { remTpl = null; } }
 
   // 1) Recordatorios por cada tramo de la cadencia.
   for (const step of steps) {
@@ -1086,7 +1173,7 @@ async function runReminders() {
       try {
         // Solo tiene sentido recordar las que aún están pendientes de confirmar.
         if (a.status !== "confirmed" && phone && wa.isConfigured()) {
-          await wa.sendText(phone, reminderText(a, step.label));
+          await sendReminderMessage(wa, phone, a, template, remTpl);
           result.sent++;
           sent = true;
         }
@@ -1175,10 +1262,11 @@ app.put("/api/reminders/config", requireAuth, async (req, res) => {
     offsets = offsets.map(Number).filter((n) => Number.isFinite(n) && n > 0);
     if (offsets.length !== 3) return res.status(400).json({ error: "Indica 3 valores (en horas) mayores que 0." });
     offsets.sort((a, b) => b - a);
+    const template = typeof req.body.template === "string" ? req.body.template.trim() : "";
     const { error } = await supabase.from("df_settings")
-      .upsert({ key: "reminder_cadence", value: { offsets }, updated_at: new Date().toISOString() }, { onConflict: "key" });
+      .upsert({ key: "reminder_cadence", value: { offsets, template }, updated_at: new Date().toISOString() }, { onConflict: "key" });
     if (error) throw error;
-    return res.json({ offsets });
+    return res.json({ offsets, template });
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
@@ -1572,11 +1660,26 @@ app.patch("/api/patients/:id/payments/:pid", requireAuth, async (req, res) => {
 // =============================================================
 // PROFESIONALES
 // =============================================================
+// Reemplaza los rangos de vacaciones de un profesional por los recibidos.
+async function saveProfessionalVacations(professionalId, vacations) {
+  if (!Array.isArray(vacations)) return;
+  await supabase.from("df_professional_time_off").delete().eq("professional_id", professionalId);
+  const rows = vacations
+    .filter((v) => v && v.start_date && v.end_date)
+    .map((v) => ({
+      professional_id: professionalId,
+      start_date: String(v.start_date).slice(0, 10),
+      end_date: String(v.end_date).slice(0, 10),
+      note: v.note || null,
+    }));
+  if (rows.length) await supabase.from("df_professional_time_off").insert(rows);
+}
+
 app.get("/api/professionals", requireAuth, async (_req, res) => {
   try {
     const { data, error } = await supabase
       .from("df_professionals")
-      .select("id, name, specialty, color, active, is_generalist, notes, created_at, updated_at, google_calendar_id, google_calendar_email, google_calendar_sync_enabled, google_calendar_connected_at, google_calendar_last_sync_at, google_calendar_sync_error, df_professional_schedules(*)")
+      .select("id, name, specialty, color, active, is_generalist, notes, created_at, updated_at, google_calendar_id, google_calendar_email, google_calendar_sync_enabled, google_calendar_connected_at, google_calendar_last_sync_at, google_calendar_sync_error, df_professional_schedules(*), df_professional_time_off(*)")
       .order("name", { ascending: true });
     if (error) throw error;
     return res.json({ professionals: data });
@@ -1602,6 +1705,7 @@ app.post("/api/professionals", requireAuth, async (req, res) => {
       }));
       await supabase.from("df_professional_schedules").insert(rows);
     }
+    await saveProfessionalVacations(pro.id, req.body.vacations);
     return res.json({ professional: pro });
   } catch (err) {
     return res.status(500).json({ error: err.message });
@@ -1626,6 +1730,7 @@ app.patch("/api/professionals/:id", requireAuth, async (req, res) => {
       }));
       if (rows.length) await supabase.from("df_professional_schedules").insert(rows);
     }
+    if (Array.isArray(req.body.vacations)) await saveProfessionalVacations(req.params.id, req.body.vacations);
     return res.json({ professional: data });
   } catch (err) {
     return res.status(500).json({ error: err.message });

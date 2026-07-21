@@ -486,6 +486,10 @@ table td, .agenda-grid .hour { font-variant-numeric: tabular-nums; }
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
         Agenda
       </div>
+      <div class="nav-item" data-route="billing">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 7H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/><line x1="12" y1="3" x2="12" y2="7"/><line x1="12" y1="21" x2="12" y2="19"/></svg>
+        Facturación
+      </div>
       <div class="nav-item" data-route="reminders">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
         Recordatorios
@@ -761,6 +765,7 @@ function route(path) {
 
   if (path === "dashboard") return renderDashboard();
   if (path === "agenda") return renderAgenda();
+  if (path === "billing") return renderBilling();
   if (path === "reminders") return renderReminders();
   if (path === "patients") return renderPatientsList();
   if (path.startsWith("patient/")) return renderPatientDetail(path.split("/")[1]);
@@ -1161,8 +1166,11 @@ function offsetToUnit(h) { // devuelve {val, unit} para la UI
   return { val: h, unit: "horas" };
 }
 async function openReminderConfigModal() {
-  let offs = [72, 24, 6];
-  try { const c = await api("/api/reminders/config"); if (c.offsets) offs = c.offsets; } catch (_e) {}
+  let offs = [72, 24, 6]; let curTemplate = "";
+  try { const c = await api("/api/reminders/config"); if (c.offsets) offs = c.offsets; curTemplate = c.template || ""; } catch (_e) {}
+  // Plantillas de Meta disponibles (apartado Marketing) para elegir la del recordatorio.
+  let templates = [], tplConfigured = true;
+  try { const r = await api("/api/marketing/templates"); templates = r.templates || []; tplConfigured = r.configured !== false; } catch (_e) { tplConfigured = false; }
   const rows = offs.map((h, i) => {
     const u = offsetToUnit(h);
     return `<div class="row" style="align-items:end">
@@ -1175,10 +1183,17 @@ async function openReminderConfigModal() {
         </select></div>
     </div>`;
   }).join("");
+  const st = { APPROVED: "Aprobada", PENDING: "En revisión", REJECTED: "Rechazada", PAUSED: "Pausada", DISABLED: "Deshabilitada" };
+  const tplOptions = `<option value="">— Texto normal (sin plantilla) —</option>` +
+    templates.map(t => `<option value="${escapeHtml(t.name)}" ${t.name === curTemplate ? "selected" : ""}>${escapeHtml(t.name)} · ${st[t.status] || t.status || ""}</option>`).join("");
   openModal(`
     <h3>Configurar recordatorios</h3>
     <p class="mini-note" style="margin:-4px 0 14px">Cuándo enviará el bot cada uno de los 3 recordatorios (antes de la cita). Se ordenan del más lejano al más cercano.</p>
     ${rows}
+    <div class="row single"><div class="field"><label>Plantilla de WhatsApp para los recordatorios</label>
+      <select class="select" id="remTemplate">${tplOptions}</select>
+      <small style="color:var(--text-3)">${tplConfigured ? "Elige entre tus plantillas aprobadas en Meta. Se rellena {{1}} con el nombre y {{2}} con la fecha/hora de la cita. Sin plantilla, se envía el texto normal." : "Conecta WhatsApp para ver tus plantillas de Meta."}</small>
+    </div></div>
     <div class="actions">
       <button class="btn" onclick="closeModal()">Cancelar</button>
       <button class="btn primary" id="saveRemCfg">Guardar</button>
@@ -1192,13 +1207,90 @@ async function openReminderConfigModal() {
       });
       if (offsets.some(h => h <= 0)) { toast("Los valores deben ser mayores que 0", "error"); return; }
       try {
-        await api("/api/reminders/config", { method: "PUT", body: { offsets } });
+        await api("/api/reminders/config", { method: "PUT", body: { offsets, template: body.querySelector("#remTemplate").value } });
         toast("Cadencia guardada", "success");
         closeModal(); renderReminders();
       } catch (err) { toast(err.message, "error"); }
     };
   }});
 }
+
+// ====================================================================
+// FACTURACIÓN
+// ====================================================================
+function todayStr() {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`;
+}
+async function renderBilling(dateStr) {
+  const date = dateStr || todayStr();
+  $main.innerHTML = `
+    <div class="page-header">
+      <h2>Facturación</h2>
+      <div class="actions" style="display:flex;gap:10px;align-items:center">
+        <label style="font-size:12px;color:var(--text-3)">Día</label>
+        <input class="input" type="date" id="billDate" value="${date}" style="max-width:170px" />
+      </div>
+    </div>
+    <div class="card kpi accent-green fade-up" style="max-width:340px;margin-bottom:16px">
+      <div class="val" id="billTotal">…</div>
+      <div class="lbl">Facturación del día</div>
+      <div class="sub" id="billCount"></div>
+    </div>
+    <div class="card" id="billList"><div class="empty-state">Cargando…</div></div>
+  `;
+  document.getElementById("billDate").addEventListener("change", (e) => renderBilling(e.target.value));
+  try {
+    const b = await api(`/api/billing?date=${encodeURIComponent(date)}`);
+    document.getElementById("billTotal").textContent = fmtEur(b.total);
+    document.getElementById("billCount").textContent = `${b.count} cobro${b.count === 1 ? "" : "s"}`;
+    document.getElementById("billList").innerHTML = b.rows.length ? `
+      <table>
+        <thead><tr><th>Paciente</th><th>Tratamiento</th><th>Hora</th><th style="text-align:right">Importe</th></tr></thead>
+        <tbody>
+          ${b.rows.map(r => `<tr>
+            <td><strong>${escapeHtml(r.patient)}</strong></td>
+            <td>${escapeHtml(r.treatment)}</td>
+            <td>${r.paid_at ? new Date(r.paid_at).toLocaleTimeString("es-ES",{hour:"2-digit",minute:"2-digit"}) : "—"}</td>
+            <td style="text-align:right;font-weight:700">${fmtEur(r.amount)}</td>
+          </tr>`).join("")}
+        </tbody>
+        <tfoot><tr><td colspan="3" style="text-align:right;font-weight:700">Total</td><td style="text-align:right;font-weight:800;color:var(--success)">${fmtEur(b.total)}</td></tr></tfoot>
+      </table>`
+      : `<div class="empty-state" style="padding:30px">Sin cobros registrados este día.<br><small>Marca citas como pagadas desde la Agenda o la ficha del paciente para que aparezcan aquí.</small></div>`;
+  } catch (err) { toast(err.message, "error"); }
+}
+
+// Marca una cita como pagada: pide confirmar el precio (editable, por defecto el del
+// tratamiento) y registra el cobro. onDone() se llama tras confirmar.
+function markAppointmentPaid(appointmentId, treatmentId, onDone) {
+  const t = (cache.treatments || []).find(x => x.id === treatmentId);
+  const defPrice = t && t.price_eur != null ? t.price_eur : 0;
+  openModal(`
+    <h3>Confirmar precio</h3>
+    <p style="color:var(--text-3);font-size:13px;margin:-4px 0 14px">Se registrará el cobro de esta cita${t ? ` (${escapeHtml(t.name)})` : ""}.</p>
+    <div class="row single"><div class="field"><label>Importe (€)</label>
+      <input class="input" type="number" step="0.01" min="0" id="payAmount" value="${defPrice}" autofocus />
+    </div></div>
+    <div class="actions">
+      <button class="btn" onclick="closeModal()">Cancelar</button>
+      <button class="btn primary" id="confirmPay">Confirmar</button>
+    </div>
+  `, { onMount: (body) => {
+    body.querySelector("#confirmPay").onclick = async () => {
+      const amount = Number(body.querySelector("#payAmount").value);
+      if (!Number.isFinite(amount) || amount < 0) { toast("Importe no válido", "error"); return; }
+      try {
+        await api(`/api/appointments/${appointmentId}/pay`, { method: "POST", body: { amount } });
+        toast("Cobro registrado", "success");
+        closeModal();
+        if (typeof onDone === "function") onDone();
+      } catch (err) { toast(err.message, "error"); }
+    };
+  }});
+}
+window.markAppointmentPaid = markAppointmentPaid;
 
 // ====================================================================
 // 2) AGENDA
@@ -1456,13 +1548,7 @@ async function renderPatientsList() {
     <div class="card">
       <div class="row-flex" style="margin-bottom:14px;flex-wrap:wrap;gap:10px;align-items:center">
         <input class="input" id="patientSearch" placeholder="Buscar por nombre, teléfono o email…" style="max-width:300px" />
-        <div class="row-flex" id="stateFilters">
-          <span class="pill active" data-state="">Todos</span>
-          <span class="pill" data-state="higiene">Higiene</span>
-          <span class="pill" data-state="reposicion">Reposición</span>
-          <span class="pill" data-state="control">Control</span>
-        </div>
-        <select class="select" id="treatFilter" style="max-width:230px" title="Filtrar por tratamiento">
+        <select class="select" id="treatFilter" style="max-width:250px" title="Filtrar por tratamiento">
           <option value="">Todos los tratamientos</option>
           ${(cache.treatments||[]).map(t=>`<option value="${t.id}">${escapeHtml(t.name)}</option>`).join("")}
         </select>
@@ -1501,12 +1587,6 @@ async function renderPatientsList() {
     `;
   }
   document.getElementById("patientSearch").addEventListener("input", (e) => { q = e.target.value.trim(); reload(); });
-  document.getElementById("stateFilters").addEventListener("click", (e) => {
-    if (!e.target.classList.contains("pill")) return;
-    document.querySelectorAll("#stateFilters .pill").forEach(p => p.classList.remove("active"));
-    e.target.classList.add("active");
-    state = e.target.dataset.state; reload();
-  });
   document.getElementById("treatFilter").addEventListener("change", (e) => { treatment = e.target.value; reload(); });
   document.getElementById("newPatientBtn").onclick = () => openPatientModal();
   document.getElementById("patientCfgBtn").onclick = () => openTreatmentGroupsModal();
@@ -1822,10 +1902,16 @@ async function renderPatientDetail(id) {
     };
 
     // Citas
+    const paidApptIds = new Set((data.payments || []).filter(p => p.paid && p.appointment_id).map(p => p.appointment_id));
     document.getElementById("patientAppts").innerHTML = data.appointments.length
-      ? data.appointments.slice(0,10).map(a => `<div style="padding:8px 0;border-bottom:1px solid var(--line);font-size:13px">
-          <strong>${fmtDateTime(a.starts_at)}</strong> · ${escapeHtml(a.df_treatments?.name||"—")} · ${escapeHtml(a.df_professionals?.name||"—")}
-          <span class="badge badge-${a.status}" style="margin-left:6px">${APPT_STATUS[a.status]||a.status}</span>
+      ? data.appointments.slice(0,10).map(a => `<div style="padding:9px 0;border-bottom:1px solid var(--line);font-size:13px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <div style="flex:1;min-width:0">
+            <strong>${fmtDateTime(a.starts_at)}</strong> · ${escapeHtml(a.df_treatments?.name||"—")} · ${escapeHtml(a.df_professionals?.name||"—")}
+            <span class="badge badge-${a.status}" style="margin-left:6px">${APPT_STATUS[a.status]||a.status}</span>
+          </div>
+          ${paidApptIds.has(a.id)
+            ? `<span class="badge badge-done">Pagada</span>`
+            : `<button class="btn" style="padding:4px 10px;font-size:12px" onclick="markAppointmentPaid('${a.id}','${a.treatment_id||""}', () => renderPatientDetail('${id}'))">Marcar como pagado</button>`}
         </div>`).join("")
       : `<div class="empty-state" style="padding:14px">Sin citas.</div>`;
 
@@ -2033,10 +2119,15 @@ async function openAppointmentModal(id, prefill) {
     <div class="row single"><div class="field"><label>Notas</label><textarea class="textarea" id="apNotes" rows="2">${escapeHtml(existing?.notes || pf.notes || "")}</textarea></div></div>
     <div class="actions">
       ${existing ? `<button class="btn danger" id="delAppt" style="margin-right:auto">Eliminar</button>` : ""}
+      ${existing ? `<button class="btn" id="payAppt">Marcar como pagado</button>` : ""}
       <button class="btn" onclick="closeModal()">Cancelar</button>
       <button class="btn primary" id="saveAppt">Guardar</button>
     </div>
   `, { onMount: (body) => {
+    if (existing) {
+      const payBtn = body.querySelector("#payAppt");
+      if (payBtn) payBtn.onclick = () => markAppointmentPaid(existing.id, existing.treatment_id, () => { closeModal(); });
+    }
     // Buscador de paciente con autocompletado
     const picker = body.querySelector("#patientPicker");
     const sugg = body.querySelector("#patientSuggest");
@@ -3022,6 +3113,7 @@ window.editProfessional = (json) => openProfessionalModal(JSON.parse(json));
 function openProfessionalModal(existing) {
   const p = existing || { schedules: [] };
   const schedules = existing?.df_professional_schedules?.map(s => ({...s})) || [];
+  const vacations = (existing?.df_professional_time_off || []).map(v => ({ start_date: String(v.start_date).slice(0,10), end_date: String(v.end_date).slice(0,10) }));
   openModal(`
     <h3>${existing ? "Editar profesional" : "Nuevo profesional"}</h3>
     <div class="row">
@@ -3046,6 +3138,10 @@ function openProfessionalModal(existing) {
     <h4 style="margin:18px 0 8px;font-size:13px;color:var(--text-2);text-transform:uppercase;letter-spacing:0.5px">Horarios</h4>
     <div id="schedList"></div>
     <button class="btn" id="addSched" style="margin-top:8px">+ Añadir franja</button>
+    <h4 style="margin:18px 0 8px;font-size:13px;color:var(--text-2);text-transform:uppercase;letter-spacing:0.5px">Vacaciones</h4>
+    <div style="color:var(--text-3);font-size:12px;margin-bottom:8px">Días en los que el bot NO agendará citas con este profesional.</div>
+    <div id="vacList"></div>
+    <button class="btn" id="addVac" style="margin-top:8px">+ Añadir vacaciones</button>
     <div class="actions">
       <button class="btn" onclick="closeModal()">Cancelar</button>
       <button class="btn primary" id="saveProf">Guardar</button>
@@ -3076,7 +3172,30 @@ function openProfessionalModal(existing) {
     }
     paintSchedules();
     body.querySelector("#addSched").onclick = () => { schedules.push({ weekday: 0, start_time: "09:30", end_time: "14:00" }); paintSchedules(); };
+
+    function paintVacations() {
+      body.querySelector("#vacList").innerHTML = vacations.length ? vacations.map((v, i) => `
+        <div class="row" style="grid-template-columns:1fr 1fr auto;align-items:end;margin-bottom:8px">
+          <div class="field"><label>Inicio</label><input class="input" type="date" data-vi="${i}" data-vk="start_date" value="${v.start_date||""}" /></div>
+          <div class="field"><label>Fin</label><input class="input" type="date" data-vi="${i}" data-vk="end_date" value="${v.end_date||""}" /></div>
+          <button class="btn danger" data-vrm="${i}" style="margin-bottom:0">×</button>
+        </div>
+      `).join("") : `<div style="color:var(--text-3);font-size:12px">Sin vacaciones registradas.</div>`;
+      body.querySelectorAll("#vacList [data-vi]").forEach(el => {
+        el.addEventListener("change", (e) => { vacations[Number(e.target.dataset.vi)][e.target.dataset.vk] = e.target.value; });
+      });
+      body.querySelectorAll("#vacList [data-vrm]").forEach(b => {
+        b.addEventListener("click", () => { vacations.splice(Number(b.dataset.vrm), 1); paintVacations(); });
+      });
+    }
+    paintVacations();
+    body.querySelector("#addVac").onclick = () => { vacations.push({ start_date: "", end_date: "" }); paintVacations(); };
+
     body.querySelector("#saveProf").onclick = async () => {
+      // Cada rango necesita inicio y fin; si falta fin, se usa el inicio (un solo día).
+      const cleanVacs = vacations
+        .filter(v => v.start_date)
+        .map(v => ({ start_date: v.start_date, end_date: v.end_date || v.start_date }));
       const payload = {
         name: body.querySelector("#proName").value.trim(),
         specialty: body.querySelector("#proSpec").value.trim(),
@@ -3084,6 +3203,7 @@ function openProfessionalModal(existing) {
         active: body.querySelector("#proActive").value === "true",
         is_generalist: body.querySelector("#proGeneralist").value === "true",
         schedules,
+        vacations: cleanVacs,
       };
       if (!payload.name || !payload.specialty) { toast("Faltan datos", "error"); return; }
       try {
