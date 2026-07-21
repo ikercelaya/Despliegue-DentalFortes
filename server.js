@@ -721,13 +721,17 @@ app.get("/api/appointments", requireAuth, async (req, res) => {
     // volver a cobrarla desde la agenda ni la ficha).
     const appts = data || [];
     const ids = appts.map((a) => a.id);
-    let paidSet = new Set();
+    const payMap = new Map();
     if (ids.length) {
       const { data: pays } = await supabase
-        .from("df_patient_payments").select("appointment_id").eq("paid", true).in("appointment_id", ids);
-      paidSet = new Set((pays || []).map((p) => p.appointment_id));
+        .from("df_patient_payments").select("appointment_id, is_partial").eq("paid", true).in("appointment_id", ids);
+      (pays || []).forEach((p) => { payMap.set(p.appointment_id, !!p.is_partial); });
     }
-    appts.forEach((a) => { a.paid = paidSet.has(a.id); });
+    appts.forEach((a) => {
+      const has = payMap.has(a.id);
+      a.paid = has;
+      a.payStatus = has ? (payMap.get(a.id) ? "partial" : "paid") : "none";
+    });
     return res.json({ appointments: appts });
   } catch (err) {
     console.error("[appointments/list]", err);
@@ -901,23 +905,29 @@ app.post("/api/appointments/:id/pay", requireAuth, async (req, res) => {
       .eq("id", req.params.id).maybeSingle();
     if (!appt) return res.status(404).json({ error: "Cita no encontrada." });
     if (!appt.patient_id) return res.status(400).json({ error: "La cita no tiene paciente asociado." });
+    // amount = lo que se cobra AHORA. Si es pago parcial, total = precio total del
+    // tratamiento (queda pendiente total - amount). Si no, total = amount.
     const amount = Number(req.body?.amount);
     if (!Number.isFinite(amount) || amount < 0) return res.status(400).json({ error: "Importe no válido." });
+    const isPartial = !!req.body?.partial;
+    let total = Number(req.body?.total);
+    if (!Number.isFinite(total) || total < amount) total = amount;   // el total no puede ser menor que lo cobrado
+    const realPartial = isPartial && amount < total;                  // parcial solo si de verdad queda pendiente
     const concept = appt.df_treatments?.name || "Cita";
     const nowISO = new Date().toISOString();
+    const fields = { amount_eur: amount, total_eur: total, is_partial: realPartial, paid: true, paid_at: nowISO, concept };
     // Si ya había un cobro para esta cita, se actualiza; si no, se crea (pagado).
     const { data: existing } = await supabase
       .from("df_patient_payments").select("id").eq("appointment_id", appt.id).limit(1).maybeSingle();
     let payment;
     if (existing) {
       const { data, error } = await supabase.from("df_patient_payments")
-        .update({ amount_eur: amount, paid: true, paid_at: nowISO, concept })
-        .eq("id", existing.id).select().single();
+        .update(fields).eq("id", existing.id).select().single();
       if (error) throw error;
       payment = data;
     } else {
       const { data, error } = await supabase.from("df_patient_payments")
-        .insert({ patient_id: appt.patient_id, appointment_id: appt.id, amount_eur: amount, paid: true, paid_at: nowISO, concept })
+        .insert({ patient_id: appt.patient_id, appointment_id: appt.id, ...fields })
         .select().single();
       if (error) throw error;
       payment = data;
@@ -936,7 +946,7 @@ app.get("/api/billing", requireAuth, async (req, res) => {
     const dayEnd = dayStart + 86400000;
     const { data: pays } = await supabase
       .from("df_patient_payments")
-      .select("id, amount_eur, paid, paid_at, concept, patient_id, df_patients(full_name)")
+      .select("id, amount_eur, total_eur, is_partial, paid, paid_at, concept, patient_id, df_patients(full_name)")
       .eq("paid", true)
       .order("paid_at", { ascending: false });
     const dayPays = (pays || []).filter((p) => {
@@ -949,6 +959,8 @@ app.get("/api/billing", requireAuth, async (req, res) => {
       patient_id: p.patient_id || null,
       treatment: p.concept || "—",
       amount: Number(p.amount_eur) || 0,
+      is_partial: !!p.is_partial,
+      total: Number(p.total_eur != null ? p.total_eur : p.amount_eur) || 0,
       paid_at: p.paid_at,
     }));
     const round2 = (n) => Math.round((n + Number.EPSILON) * 100) / 100;
@@ -1012,6 +1024,38 @@ app.put("/api/billing/caja-inicial", requireAuth, async (req, res) => {
       .upsert({ key: "cash_initial:" + dateStr, value: { amount }, updated_at: new Date().toISOString() }, { onConflict: "key" });
     if (error) throw error;
     return res.json({ date: dateStr, cajaInicial: amount });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// Pagos pendientes: cobros PARCIALES (queda por cobrar total_eur - amount_eur).
+// Se muestran en un apartado al final del dashboard.
+app.get("/api/payments/pending", requireAuth, async (_req, res) => {
+  try {
+    const { data: pays, error } = await supabase
+      .from("df_patient_payments")
+      .select("id, amount_eur, total_eur, is_partial, paid_at, concept, patient_id, appointment_id, df_patients(full_name)")
+      .eq("is_partial", true)
+      .order("paid_at", { ascending: false });
+    if (error) throw error;
+    const round2 = (n) => Math.round((n + Number.EPSILON) * 100) / 100;
+    const rows = (pays || []).map((p) => {
+      const paid = Number(p.amount_eur) || 0;
+      const total = Number(p.total_eur != null ? p.total_eur : p.amount_eur) || 0;
+      return {
+        id: p.id,
+        patient: p.df_patients?.full_name || "—",
+        patient_id: p.patient_id || null,
+        treatment: p.concept || "—",
+        paid: round2(paid),
+        total: round2(total),
+        pending: round2(Math.max(0, total - paid)),
+        paid_at: p.paid_at,
+      };
+    }).filter((r) => r.pending > 0);
+    const totalPending = round2(rows.reduce((s, r) => s + r.pending, 0));
+    return res.json({ rows, count: rows.length, totalPending });
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }

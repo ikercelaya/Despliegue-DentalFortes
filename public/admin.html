@@ -342,28 +342,43 @@ table td, .agenda-grid .hour { font-variant-numeric: tabular-nums; }
 .kb-meta { font-size:12px; color:var(--text-3); margin-top:2px; }
 /* Previsualización de plantilla estilo WhatsApp */
 .wa-preview { background:#E7F7DE; border:1px solid #CDE9C0; border-radius:12px; border-top-left-radius:3px; padding:12px 14px; font-size:14px; line-height:1.5; color:#1F2A22; box-shadow:var(--shadow-sm); max-width:420px; }
-/* Facturación: calendario + totales de caja */
-.bill-layout { display:grid; grid-template-columns:300px 1fr; gap:18px; align-items:start; }
-@media (max-width:860px){ .bill-layout { grid-template-columns:1fr; } }
-.cal-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; font-weight:700; color:var(--text); }
-.cal-nav { width:30px; height:30px; border:1px solid var(--line-2); background:#fff; border-radius:8px; cursor:pointer; color:var(--text-2); font-size:16px; }
-.cal-nav:hover { background:var(--bg-2); }
-.cal-grid { display:grid; grid-template-columns:repeat(7,1fr); gap:4px; }
+/* Facturación: calendario + totales de caja (rediseño premium) */
+.bill-top { display:grid; grid-template-columns:1fr 1fr; gap:18px; align-items:stretch; margin-bottom:18px; }
+@media (max-width:900px){ .bill-top { grid-template-columns:1fr; } }
+.bill-cal-card { display:flex; flex-direction:column; justify-content:center; }
+.bill-date { font-size:13px; color:var(--text-3); text-transform:capitalize; margin-bottom:12px; font-weight:600; }
+.cal-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:14px; font-weight:700; color:var(--text); }
+.cal-nav { width:32px; height:32px; border:1px solid var(--line-2); background:#fff; border-radius:9px; cursor:pointer; color:var(--text-2); font-size:16px; transition:background .15s,border-color .15s; }
+.cal-nav:hover { background:var(--bg-2); border-color:var(--accent-2); }
+.cal-grid { display:grid; grid-template-columns:repeat(7,1fr); gap:5px; }
 .cal-wd { text-align:center; font-size:11px; font-weight:700; color:var(--text-3); padding:4px 0; }
-.cal-cell { text-align:center; padding:8px 0; font-size:13px; border-radius:8px; cursor:pointer; color:var(--text-2); font-variant-numeric:tabular-nums; }
+.cal-cell { display:flex; align-items:center; justify-content:center; aspect-ratio:1/1; font-size:13px; border-radius:10px; cursor:pointer; color:var(--text-2); font-variant-numeric:tabular-nums; transition:background .12s; }
 .cal-cell:hover { background:var(--bg-2); }
 .cal-empty { visibility:hidden; cursor:default; }
 .cal-today { border:1px solid var(--accent-2); color:var(--accent); font-weight:700; }
-.cal-sel { background:var(--silver); color:#fff; font-weight:700; }
+.cal-sel { background:var(--silver); color:#fff; font-weight:700; box-shadow:0 4px 12px -4px rgba(85,122,198,.5); }
 .cal-sel:hover { background:var(--silver); filter:brightness(.97); }
-.cash-row { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; }
-.cash-row-2 { grid-template-columns:repeat(2,1fr); }
-.cash-box { background:var(--surface,#fff); border:1px solid var(--line-2); border-radius:12px; padding:13px 15px; box-shadow:var(--shadow-sm); }
-.cash-box.cash-final { background:#E7F7F0; border-color:#BEE7D8; }
-.cash-lbl { font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.4px; color:var(--text-3); margin-bottom:7px; }
-.cash-val { font-size:22px; font-weight:800; color:var(--text); font-variant-numeric:tabular-nums; }
-.cash-box.cash-final .cash-val { color:var(--success); }
-.cash-input { font-size:20px; font-weight:800; padding:4px 8px; }
+/* Rejilla simétrica de tarjetas de datos, tipo "bento" */
+.bill-stats { display:grid; grid-template-columns:repeat(2,1fr); grid-auto-rows:1fr; gap:14px; }
+.stat-tile { position:relative; overflow:hidden; display:flex; flex-direction:column; justify-content:space-between; min-height:104px; padding:16px 18px; border-radius:16px; border:1px solid var(--line-2); background:linear-gradient(158deg,#ffffff 0%,#f6f8fc 100%); box-shadow:0 6px 18px -12px rgba(40,60,110,.35); transition:transform .16s ease,box-shadow .16s ease; }
+.stat-tile:hover { transform:translateY(-3px); box-shadow:0 14px 28px -14px rgba(40,60,110,.45); }
+.stat-tile::before { content:""; position:absolute; left:0; top:0; bottom:0; width:4px; background:var(--tile-accent,var(--accent)); }
+.stat-tile-ico { position:absolute; top:14px; right:15px; width:30px; height:30px; border-radius:9px; display:flex; align-items:center; justify-content:center; background:var(--tile-soft,#EEF3FC); color:var(--tile-accent,var(--accent)); }
+.stat-tile-ico svg { width:17px; height:17px; }
+.stat-tile-lbl { font-size:10.5px; font-weight:700; text-transform:uppercase; letter-spacing:.5px; color:var(--text-3); }
+.stat-tile-val { font-size:27px; font-weight:800; color:var(--text); font-variant-numeric:tabular-nums; line-height:1.05; margin-top:4px; }
+.stat-tile.is-final { grid-column:1 / -1; min-height:auto; background:linear-gradient(135deg,#E9FAF2 0%,#DCF4E9 100%); border-color:#BEE7D8; flex-direction:row; align-items:center; justify-content:space-between; }
+.stat-tile.is-final::before { background:var(--success); }
+.stat-tile.is-final .stat-tile-val { color:var(--success); font-size:30px; }
+.stat-tile-input { width:100%; border:0; background:transparent; font-size:26px; font-weight:800; color:var(--text); font-variant-numeric:tabular-nums; padding:2px 0; margin-top:2px; outline:none; }
+.stat-tile-input::placeholder { color:var(--text-3); }
+.stat-tile-input:focus { border-bottom:2px solid var(--accent); }
+/* Etiqueta "pago parcial" */
+.tag-partial { display:inline-flex; align-items:center; gap:4px; padding:2px 8px; border-radius:999px; font-size:10.5px; font-weight:700; text-transform:uppercase; letter-spacing:.3px; background:#FDF0D8; color:#B7791F; border:1px solid #F3DCA9; }
+/* Casilla de pago parcial en el modal de cobro */
+.pay-partial-check { display:flex; align-items:flex-start; gap:9px; margin:2px 0 4px; padding:11px 13px; border:1px solid var(--line-2); border-radius:11px; background:var(--bg-2,#f6f8fc); cursor:pointer; font-size:13.5px; font-weight:600; color:var(--text); user-select:none; }
+.pay-partial-check input { margin-top:2px; width:16px; height:16px; accent-color:var(--accent); cursor:pointer; }
+.pay-partial-check small { display:block; font-weight:400; color:var(--text-3); font-size:12px; margin-top:1px; }
 /* Aviso llamativo de solicitudes de cancelación en la agenda */
 .cancel-alert { background:#FCE9EC; border:1.5px solid var(--danger); border-radius:14px; padding:14px 16px; margin-bottom:16px; box-shadow:0 6px 18px -8px rgba(214,91,119,.5); animation:cancelPulse 2s ease-in-out infinite; }
 @keyframes cancelPulse { 0%,100%{ box-shadow:0 6px 18px -8px rgba(214,91,119,.45);} 50%{ box-shadow:0 6px 22px -6px rgba(214,91,119,.75);} }
@@ -899,6 +914,14 @@ async function renderDashboard() {
       <h3>Próximas citas</h3>
       <div id="upcoming"><div class="empty-state">Cargando…</div></div>
     </div>
+    <div style="height:16px"></div>
+    <div class="card" id="pendingPaysCard">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
+        <h3 style="margin:0">Pagos pendientes</h3>
+        <span class="tag-partial" id="pendingPaysTotal" style="display:none"></span>
+      </div>
+      <div id="pendingPays" style="margin-top:12px"><div class="empty-state">Cargando…</div></div>
+    </div>
   `;
   document.getElementById("newApptBtn").addEventListener("click", () => openAppointmentModal());
 
@@ -948,6 +971,36 @@ async function renderDashboard() {
 
   loadDashboardBilling();
   loadTreatmentMetrics();
+  loadPendingPayments();
+}
+
+// Sección "Pagos pendientes" del dashboard: cobros parciales con lo que queda por cobrar.
+async function loadPendingPayments() {
+  const box = document.getElementById("pendingPays");
+  if (!box) return;
+  try {
+    const d = await api("/api/payments/pending");
+    const totalEl = document.getElementById("pendingPaysTotal");
+    if (d.rows.length && totalEl) {
+      totalEl.textContent = `${d.count} pendiente(s) · ${fmtEur(d.totalPending)} por cobrar`;
+      totalEl.style.display = "";
+    }
+    box.innerHTML = d.rows.length ? `
+      <table>
+        <thead><tr><th>Paciente</th><th>Tratamiento</th><th style="text-align:right">Pagado</th><th style="text-align:right">Total</th><th style="text-align:right">Pendiente</th></tr></thead>
+        <tbody>
+          ${d.rows.map(r => `<tr${r.patient_id ? ` class="row-click" onclick="location.hash='patient/${r.patient_id}'"` : ""}>
+            <td><strong>${escapeHtml(r.patient)}</strong></td>
+            <td>${escapeHtml(r.treatment)} <span class="tag-partial">pago parcial</span></td>
+            <td style="text-align:right">${fmtEur(r.paid)}</td>
+            <td style="text-align:right;color:var(--text-3)">${fmtEur(r.total)}</td>
+            <td style="text-align:right;font-weight:800;color:#B7791F">${fmtEur(r.pending)}</td>
+          </tr>`).join("")}
+        </tbody>
+        <tfoot><tr><td colspan="4" style="text-align:right;font-weight:700">Total pendiente</td><td style="text-align:right;font-weight:800;color:#B7791F">${fmtEur(d.totalPending)}</td></tr></tfoot>
+      </table>`
+      : `<div class="empty-state" style="padding:24px">No hay pagos pendientes. <br><small>Cuando registres un cobro como "pago parcial", la parte pendiente aparecerá aquí.</small></div>`;
+  } catch (err) { box.innerHTML = `<div class="empty-state" style="padding:20px">No se pudieron cargar los pagos pendientes.</div>`; }
 }
 
 async function loadDashboardBilling() {
@@ -1293,25 +1346,48 @@ async function renderBilling(dateStr, viewMonthStr) {
   const date = dateStr || todayStr();
   const [vy, vm] = (viewMonthStr || date.slice(0, 7)).split("-").map(Number);
   const prettyDate = new Date(date + "T00:00:00").toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+  const ICO = {
+    inicial: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2.5"/></svg>',
+    fact: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 14l3-3 3 3 5-6"/></svg>',
+    pac: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/></svg>',
+    trat: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2c-1.5 3-4 3.5-4 7 0 2.5 1.5 4 4 4s4-1.5 4-4c0-3.5-2.5-4-4-7z"/><path d="M9 17c0 2 1 4 3 4s3-2 3-4"/></svg>',
+    final: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>',
+  };
   $main.innerHTML = `
     <div class="page-header"><h2>Facturación</h2></div>
-    <div class="bill-layout">
-      <div class="card fade-up" id="billCalCard">${buildBillCalendar(vy, vm, date)}</div>
-      <div>
-        <div style="font-size:13px;color:var(--text-3);text-transform:capitalize;margin-bottom:10px">${prettyDate}</div>
-        <div class="cash-row">
-          <div class="cash-box"><div class="cash-lbl">Caja inicial</div>
-            <input class="input cash-input" type="number" step="0.01" min="0" id="cajaInicial" placeholder="0,00" /></div>
-          <div class="cash-box"><div class="cash-lbl">Facturación diaria</div><div class="cash-val" id="cajaFact">…</div></div>
-          <div class="cash-box cash-final"><div class="cash-lbl">Caja final</div><div class="cash-val" id="cajaFinal">…</div></div>
+    <div class="bill-top">
+      <div class="card fade-up bill-cal-card" id="billCalCard">${buildBillCalendar(vy, vm, date)}</div>
+      <div class="fade-up">
+        <div class="bill-date">${prettyDate}</div>
+        <div class="bill-stats">
+          <div class="stat-tile is-input" style="--tile-accent:#557AC6;--tile-soft:#EEF3FC">
+            <div class="stat-tile-ico">${ICO.inicial}</div>
+            <div class="stat-tile-lbl">Caja inicial</div>
+            <input class="stat-tile-input" type="number" step="0.01" min="0" id="cajaInicial" placeholder="0,00" />
+          </div>
+          <div class="stat-tile" style="--tile-accent:#2FA97C;--tile-soft:#E7F7F0">
+            <div class="stat-tile-ico">${ICO.fact}</div>
+            <div class="stat-tile-lbl">Facturación diaria</div>
+            <div class="stat-tile-val" id="cajaFact">…</div>
+          </div>
+          <div class="stat-tile" style="--tile-accent:#557AC6;--tile-soft:#EEF3FC">
+            <div class="stat-tile-ico">${ICO.pac}</div>
+            <div class="stat-tile-lbl">Nº de pacientes</div>
+            <div class="stat-tile-val" id="billNumPatients">…</div>
+          </div>
+          <div class="stat-tile" style="--tile-accent:#8B6FC7;--tile-soft:#F0EBFA">
+            <div class="stat-tile-ico">${ICO.trat}</div>
+            <div class="stat-tile-lbl">Tratamientos realizados</div>
+            <div class="stat-tile-val" id="billNumTreat">…</div>
+          </div>
+          <div class="stat-tile is-final">
+            <div><div class="stat-tile-lbl">Caja final</div><div class="stat-tile-val" id="cajaFinal">…</div></div>
+            <div class="stat-tile-ico" style="position:static">${ICO.final}</div>
+          </div>
         </div>
-        <div class="cash-row cash-row-2" style="margin-top:12px">
-          <div class="cash-box"><div class="cash-lbl">Nº de pacientes</div><div class="cash-val" id="billNumPatients">…</div></div>
-          <div class="cash-box"><div class="cash-lbl">Tratamientos realizados</div><div class="cash-val" id="billNumTreat">…</div></div>
-        </div>
-        <div class="card" id="billList" style="margin-top:14px"><div class="empty-state">Cargando…</div></div>
       </div>
     </div>
+    <div class="card fade-up" id="billList"><div class="empty-state">Cargando…</div></div>
   `;
   try {
     const b = await api(`/api/billing?date=${encodeURIComponent(date)}`);
@@ -1338,7 +1414,7 @@ async function renderBilling(dateStr, viewMonthStr) {
             <td><strong>${escapeHtml(r.patient)}</strong></td>
             <td>${escapeHtml(r.treatment)}</td>
             <td>${r.paid_at ? new Date(r.paid_at).toLocaleTimeString("es-ES",{hour:"2-digit",minute:"2-digit"}) : "—"}</td>
-            <td style="text-align:right;font-weight:700">${fmtEur(r.amount)}</td>
+            <td style="text-align:right;font-weight:700;white-space:nowrap">${fmtEur(r.amount)}${r.is_partial ? ` <span class="tag-partial">pago parcial</span>` : ""}</td>
           </tr>`).join("")}
         </tbody>
         <tfoot><tr><td colspan="3" style="text-align:right;font-weight:700">Total</td><td style="text-align:right;font-weight:800;color:var(--success)">${fmtEur(dailyTotal)}</td></tr></tfoot>
@@ -1355,20 +1431,55 @@ function markAppointmentPaid(appointmentId, treatmentId, onDone) {
   openModal(`
     <h3>Confirmar precio</h3>
     <p style="color:var(--text-3);font-size:13px;margin:-4px 0 14px">Se registrará el cobro de esta cita${t ? ` (${escapeHtml(t.name)})` : ""}.</p>
-    <div class="row single"><div class="field"><label>Importe (€)</label>
+    <div class="row single"><div class="field"><label>Importe total (€)</label>
       <input class="input" type="number" step="0.01" min="0" id="payAmount" value="${defPrice}" autofocus />
     </div></div>
+    <label class="pay-partial-check" for="payPartial">
+      <input type="checkbox" id="payPartial" />
+      <span>Pago parcial <small>(el paciente abona ahora solo una parte)</small></span>
+    </label>
+    <div class="row single" id="payPartialRow" style="display:none">
+      <div class="field"><label>Cantidad pagada ahora (€)</label>
+        <input class="input" type="number" step="0.01" min="0" id="payPaidNow" placeholder="0,00" />
+        <div class="mini-note" id="payPendingNote" style="margin-top:6px"></div>
+      </div>
+    </div>
     <div class="actions">
       <button class="btn" onclick="closeModal()">Cancelar</button>
       <button class="btn primary" id="confirmPay">Confirmar</button>
     </div>
   `, { onMount: (body) => {
+    const totalEl = body.querySelector("#payAmount");
+    const partialChk = body.querySelector("#payPartial");
+    const partialRow = body.querySelector("#payPartialRow");
+    const paidNowEl = body.querySelector("#payPaidNow");
+    const pendingNote = body.querySelector("#payPendingNote");
+    const updatePending = () => {
+      const total = Number(totalEl.value) || 0;
+      const paid = Number(paidNowEl.value) || 0;
+      const pending = Math.max(0, total - paid);
+      pendingNote.textContent = partialChk.checked
+        ? `Quedará pendiente ${fmtEur(pending)} de un total de ${fmtEur(total)}.` : "";
+    };
+    partialChk.addEventListener("change", () => {
+      partialRow.style.display = partialChk.checked ? "" : "none";
+      if (partialChk.checked && !paidNowEl.value) paidNowEl.focus();
+      updatePending();
+    });
+    totalEl.addEventListener("input", updatePending);
+    paidNowEl.addEventListener("input", updatePending);
     body.querySelector("#confirmPay").onclick = async () => {
-      const amount = Number(body.querySelector("#payAmount").value);
-      if (!Number.isFinite(amount) || amount < 0) { toast("Importe no válido", "error"); return; }
+      const total = Number(totalEl.value);
+      if (!Number.isFinite(total) || total < 0) { toast("Importe no válido", "error"); return; }
+      const partial = partialChk.checked;
+      const amount = partial ? Number(paidNowEl.value) : total;
+      if (partial) {
+        if (!Number.isFinite(amount) || amount < 0) { toast("Cantidad pagada no válida", "error"); return; }
+        if (amount > total) { toast("La cantidad pagada no puede superar el total", "error"); return; }
+      }
       try {
-        await api(`/api/appointments/${appointmentId}/pay`, { method: "POST", body: { amount } });
-        toast("Cobro registrado", "success");
+        await api(`/api/appointments/${appointmentId}/pay`, { method: "POST", body: { amount, total, partial } });
+        toast(partial && amount < total ? "Pago parcial registrado" : "Cobro registrado", "success");
         closeModal();
         if (typeof onDone === "function") onDone();
       } catch (err) { toast(err.message, "error"); }
@@ -2029,17 +2140,28 @@ async function renderPatientDetail(id) {
     };
 
     // Citas
-    const paidApptIds = new Set((data.payments || []).filter(p => p.paid && p.appointment_id).map(p => p.appointment_id));
+    const payByAppt = new Map();
+    (data.payments || []).forEach(p => { if (p.paid && p.appointment_id) payByAppt.set(p.appointment_id, p); });
     document.getElementById("patientAppts").innerHTML = data.appointments.length
-      ? data.appointments.slice(0,10).map(a => `<div style="padding:9px 0;border-bottom:1px solid var(--line);font-size:13px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+      ? data.appointments.slice(0,10).map(a => {
+          const pay = payByAppt.get(a.id);
+          let right;
+          if (pay && pay.is_partial) {
+            right = `<span class="tag-partial">pago parcial</span>
+              <button class="btn" style="padding:4px 10px;font-size:12px" onclick="markAppointmentPaid('${a.id}','${a.treatment_id||""}', () => renderPatientDetail('${id}'))">Completar pago</button>`;
+          } else if (pay) {
+            right = `<span class="badge badge-done">Pagada</span>`;
+          } else {
+            right = `<button class="btn" style="padding:4px 10px;font-size:12px" onclick="markAppointmentPaid('${a.id}','${a.treatment_id||""}', () => renderPatientDetail('${id}'))">Marcar como pagado</button>`;
+          }
+          return `<div style="padding:9px 0;border-bottom:1px solid var(--line);font-size:13px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
           <div style="flex:1;min-width:0">
             <strong>${fmtDateTime(a.starts_at)}</strong> · ${escapeHtml(a.df_treatments?.name||"—")} · ${escapeHtml(a.df_professionals?.name||"—")}
             <span class="badge badge-${a.status}" style="margin-left:6px">${APPT_STATUS[a.status]||a.status}</span>
           </div>
-          ${paidApptIds.has(a.id)
-            ? `<span class="badge badge-done">Pagada</span>`
-            : `<button class="btn" style="padding:4px 10px;font-size:12px" onclick="markAppointmentPaid('${a.id}','${a.treatment_id||""}', () => renderPatientDetail('${id}'))">Marcar como pagado</button>`}
-        </div>`).join("")
+          ${right}
+        </div>`;
+        }).join("")
       : `<div class="empty-state" style="padding:14px">Sin citas.</div>`;
 
     // Cobros
@@ -2048,6 +2170,7 @@ async function renderPatientDetail(id) {
           <div class="pay-info"><span class="pay-concept">${escapeHtml(pay.concept || "—")}</span>
             <span class="pay-amt">${fmtEur(pay.amount_eur)}</span>
             ${pay.paid?'<span class="badge badge-done">Pagado</span>':'<span class="badge badge-pending">Pendiente</span>'}
+            ${pay.is_partial?`<span class="tag-partial" title="Pendiente ${fmtEur(Math.max(0,(Number(pay.total_eur)||0)-(Number(pay.amount_eur)||0)))}">parcial</span>`:''}
           </div>
           <div class="pay-actions">
             <button class="chip-btn" title="Editar importe" onclick="editPayment('${id}','${pay.id}', ${Number(pay.amount_eur)||0}, ${JSON.stringify(escapeHtml(pay.concept||"")).replace(/"/g,'&quot;')})">✎</button>
@@ -2246,14 +2369,16 @@ async function openAppointmentModal(id, prefill) {
     <div class="row single"><div class="field"><label>Notas</label><textarea class="textarea" id="apNotes" rows="2">${escapeHtml(existing?.notes || pf.notes || "")}</textarea></div></div>
     <div class="actions">
       ${existing ? `<button class="btn danger" id="delAppt" style="margin-right:auto">Eliminar</button>` : ""}
-      ${existing ? (existing.paid
+      ${existing ? (existing.payStatus === "paid"
         ? `<span class="badge badge-done" style="align-self:center;padding:7px 12px">Pagada</span>`
-        : `<button class="btn" id="payAppt">Marcar como pagado</button>`) : ""}
+        : existing.payStatus === "partial"
+          ? `<span class="tag-partial" style="align-self:center;padding:6px 10px">pago parcial</span><button class="btn" id="payAppt">Completar pago</button>`
+          : `<button class="btn" id="payAppt">Marcar como pagado</button>`) : ""}
       <button class="btn" onclick="closeModal()">Cancelar</button>
       <button class="btn primary" id="saveAppt">Guardar</button>
     </div>
   `, { onMount: (body) => {
-    if (existing && !existing.paid) {
+    if (existing && existing.payStatus !== "paid") {
       const payBtn = body.querySelector("#payAppt");
       if (payBtn) payBtn.onclick = () => markAppointmentPaid(existing.id, existing.treatment_id, () => { closeModal(); renderAgenda(); });
     }
