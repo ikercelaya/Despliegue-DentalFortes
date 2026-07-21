@@ -487,7 +487,7 @@ table td, .agenda-grid .hour { font-variant-numeric: tabular-nums; }
         Agenda
       </div>
       <div class="nav-item" data-route="billing">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 7H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/><line x1="12" y1="3" x2="12" y2="7"/><line x1="12" y1="21" x2="12" y2="19"/></svg>
+        <span style="width:17px;height:17px;display:inline-flex;align-items:center;justify-content:center;font-size:16px;font-weight:800;flex-shrink:0;line-height:1">€</span>
         Facturación
       </div>
       <div class="nav-item" data-route="reminders">
@@ -2119,14 +2119,16 @@ async function openAppointmentModal(id, prefill) {
     <div class="row single"><div class="field"><label>Notas</label><textarea class="textarea" id="apNotes" rows="2">${escapeHtml(existing?.notes || pf.notes || "")}</textarea></div></div>
     <div class="actions">
       ${existing ? `<button class="btn danger" id="delAppt" style="margin-right:auto">Eliminar</button>` : ""}
-      ${existing ? `<button class="btn" id="payAppt">Marcar como pagado</button>` : ""}
+      ${existing ? (existing.paid
+        ? `<span class="badge badge-done" style="align-self:center;padding:7px 12px">Pagada</span>`
+        : `<button class="btn" id="payAppt">Marcar como pagado</button>`) : ""}
       <button class="btn" onclick="closeModal()">Cancelar</button>
       <button class="btn primary" id="saveAppt">Guardar</button>
     </div>
   `, { onMount: (body) => {
-    if (existing) {
+    if (existing && !existing.paid) {
       const payBtn = body.querySelector("#payAppt");
-      if (payBtn) payBtn.onclick = () => markAppointmentPaid(existing.id, existing.treatment_id, () => { closeModal(); });
+      if (payBtn) payBtn.onclick = () => markAppointmentPaid(existing.id, existing.treatment_id, () => { closeModal(); renderAgenda(); });
     }
     // Buscador de paciente con autocompletado
     const picker = body.querySelector("#patientPicker");

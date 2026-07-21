@@ -702,7 +702,18 @@ app.get("/api/appointments", requireAuth, async (req, res) => {
     if (status) q = q.eq("status", status);
     const { data, error } = await q;
     if (error) throw error;
-    return res.json({ appointments: data });
+    // Marca cada cita como pagada si tiene un cobro pagado asociado (para no permitir
+    // volver a cobrarla desde la agenda ni la ficha).
+    const appts = data || [];
+    const ids = appts.map((a) => a.id);
+    let paidSet = new Set();
+    if (ids.length) {
+      const { data: pays } = await supabase
+        .from("df_patient_payments").select("appointment_id").eq("paid", true).in("appointment_id", ids);
+      paidSet = new Set((pays || []).map((p) => p.appointment_id));
+    }
+    appts.forEach((a) => { a.paid = paidSet.has(a.id); });
+    return res.json({ appointments: appts });
   } catch (err) {
     console.error("[appointments/list]", err);
     return res.status(500).json({ error: err.message });
