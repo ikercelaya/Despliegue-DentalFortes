@@ -311,6 +311,36 @@ table td, .agenda-grid .hour { font-variant-numeric: tabular-nums; }
 .chk-row { display:flex; align-items:center; gap:8px; font-size:13px; color:var(--text-2); cursor:pointer; padding:3px 0; }
 .chk-row:hover { color:var(--text); }
 .manual-suggest { background:#fff; border:1px solid var(--line-2); border-radius:8px; max-height:260px; overflow-y:auto; box-shadow:var(--shadow-sm); }
+/* Grupos por tratamiento (etiquetado masivo) */
+.tg-item { border:1px solid var(--line); border-radius:10px; background:#fff; overflow:hidden; }
+.tg-item > summary { list-style:none; cursor:pointer; padding:11px 14px; display:flex; align-items:center; justify-content:space-between; gap:10px; font-weight:700; font-size:13.5px; color:var(--text); }
+.tg-item > summary::-webkit-details-marker { display:none; }
+.tg-count { font-family:var(--font-mono,monospace); font-size:11px; font-weight:600; color:var(--text-3); background:var(--bg-2); border:1px solid var(--line); border-radius:999px; padding:2px 9px; min-width:24px; text-align:center; }
+.tg-body { padding:0 14px 14px; display:flex; flex-direction:column; gap:10px; }
+.tg-res, .tg-addall { padding:8px 11px; cursor:pointer; border-bottom:1px solid var(--line); font-size:13px; }
+.tg-res:hover, .tg-addall:hover { background:var(--bg-2); }
+.tg-addall { font-weight:700; color:var(--accent); background:#EEF3FC; }
+.tg-member { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:7px 0; border-bottom:1px solid var(--line); font-size:13px; }
+.tg-member:last-child { border-bottom:none; }
+/* Tablero de presupuestos */
+.kanban { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+@media (max-width:760px){ .kanban { grid-template-columns:1fr; } }
+.kb-col { background:var(--bg-2); border:1px solid var(--line); border-radius:14px; padding:12px; }
+.kb-head { display:flex; align-items:center; justify-content:space-between; font-size:13px; font-weight:700; padding:4px 6px 12px; color:var(--text); }
+.kb-head-pend { color:var(--warn); }
+.kb-head-acc { color:var(--success); }
+.kb-count { font-size:11px; font-weight:700; background:#fff; border:1px solid var(--line-2); border-radius:999px; padding:2px 9px; color:var(--text-2); }
+.kb-list { display:flex; flex-direction:column; gap:9px; }
+.kb-card { background:#fff; border:1px solid var(--line-2); border-radius:11px; padding:11px 13px; box-shadow:var(--shadow-sm); }
+.kb-name { font-weight:700; font-size:14px; color:var(--text); }
+.kb-meta { font-size:12px; color:var(--text-3); margin-top:2px; }
+/* Previsualización de plantilla estilo WhatsApp */
+.wa-preview { background:#E7F7DE; border:1px solid #CDE9C0; border-radius:12px; border-top-left-radius:3px; padding:12px 14px; font-size:14px; line-height:1.5; color:#1F2A22; box-shadow:var(--shadow-sm); max-width:420px; }
+/* Editor de variables de plantilla (variable | valor) */
+.tpl-var-rows { display:flex; flex-direction:column; gap:8px; }
+.tpl-var-rows:empty { display:none; }
+.tpl-var-row { display:grid; grid-template-columns:72px 1fr; gap:10px; align-items:center; }
+.tpl-var-tag { font-family:var(--font-mono,monospace); font-size:13px; font-weight:700; color:var(--accent); background:#EEF3FC; border:1px solid var(--line-2); border-radius:8px; padding:8px 0; text-align:center; }
 .chips { display:flex; flex-wrap:wrap; gap:6px; }
 .chip { display:inline-flex; align-items:center; gap:6px; padding:4px 6px 4px 11px; border-radius:999px; font-size:12px; font-weight:600; background:#EEF3FC; color:var(--accent); border:1px solid #CFE0F7; }
 .chip button { display:inline-flex; align-items:center; justify-content:center; width:17px; height:17px; border-radius:50%; border:0; cursor:pointer; background:#D8E4F7; color:var(--accent); font-size:13px; line-height:1; padding:0; }
@@ -463,6 +493,10 @@ table td, .agenda-grid .hour { font-variant-numeric: tabular-nums; }
       <div class="nav-item" data-route="patients">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
         Pacientes
+      </div>
+      <div class="nav-item" data-route="budgets">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="15" x2="15" y2="15"/></svg>
+        Presupuestos
       </div>
       <div class="nav-item" data-route="conversations">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
@@ -730,6 +764,7 @@ function route(path) {
   if (path === "reminders") return renderReminders();
   if (path === "patients") return renderPatientsList();
   if (path.startsWith("patient/")) return renderPatientDetail(path.split("/")[1]);
+  if (path === "budgets") return renderBudgets();
   if (path === "conversations") return renderConversations();
   if (path.startsWith("conversation/")) return renderConversationDetail(path.split("/")[1]);
   if (path === "reviews") return renderReviews();
@@ -1408,26 +1443,39 @@ async function renderPatientsList() {
   $main.innerHTML = `
     <div class="page-header">
       <h2>Pacientes</h2>
-      <div class="actions"><button class="btn primary" id="newPatientBtn">+ Nuevo paciente</button></div>
+      <div class="actions" style="display:flex;gap:8px;align-items:center">
+        <button class="btn" id="patientCfgBtn" title="Grupos por tratamiento (etiquetado masivo)" style="display:inline-flex;align-items:center;gap:7px">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+          </svg>Grupos
+        </button>
+        <button class="btn primary" id="newPatientBtn">+ Nuevo paciente</button>
+      </div>
     </div>
     <div class="card">
-      <div class="row-flex" style="margin-bottom:14px;flex-wrap:wrap">
-        <input class="input" id="patientSearch" placeholder="Buscar por nombre, teléfono o email…" style="max-width:340px" />
+      <div class="row-flex" style="margin-bottom:14px;flex-wrap:wrap;gap:10px;align-items:center">
+        <input class="input" id="patientSearch" placeholder="Buscar por nombre, teléfono o email…" style="max-width:300px" />
         <div class="row-flex" id="stateFilters">
           <span class="pill active" data-state="">Todos</span>
           <span class="pill" data-state="higiene">Higiene</span>
           <span class="pill" data-state="reposicion">Reposición</span>
           <span class="pill" data-state="control">Control</span>
         </div>
+        <select class="select" id="treatFilter" style="max-width:230px" title="Filtrar por tratamiento">
+          <option value="">Todos los tratamientos</option>
+          ${(cache.treatments||[]).map(t=>`<option value="${t.id}">${escapeHtml(t.name)}</option>`).join("")}
+        </select>
       </div>
       <div id="patientsTable"><div class="empty-state">Cargando…</div></div>
     </div>
   `;
-  let state = ""; let q = "";
+  let state = ""; let q = ""; let treatment = "";
   async function reload() {
     const params = new URLSearchParams();
     if (state) params.set("state", state);
     if (q) params.set("q", q);
+    if (treatment) params.set("treatment_id", treatment);
     const { patients } = await api("/api/patients?" + params.toString());
     if (!patients.length) {
       document.getElementById("patientsTable").innerHTML = `<div class="empty-state">No hay pacientes que coincidan.</div>`;
@@ -1459,9 +1507,161 @@ async function renderPatientsList() {
     e.target.classList.add("active");
     state = e.target.dataset.state; reload();
   });
+  document.getElementById("treatFilter").addEventListener("change", (e) => { treatment = e.target.value; reload(); });
   document.getElementById("newPatientBtn").onclick = () => openPatientModal();
+  document.getElementById("patientCfgBtn").onclick = () => openTreatmentGroupsModal();
   reload();
 }
+
+// Configuración de grupos por tratamiento: etiquetar pacientes (individual o masivo) con
+// cada tratamiento, para segmentar mejor las campañas y poder filtrarlos en Pacientes.
+function openTreatmentGroupsModal() {
+  const treats = cache.treatments || [];
+  openModal(`
+    <h3>Grupos por tratamiento</h3>
+    <p style="color:var(--text-3);font-size:13px;margin:0 0 14px">
+      Añade pacientes al grupo de cada tratamiento que estén recibiendo o hayan recibido.
+      Sirve para segmentar campañas y filtrar en Pacientes.
+    </p>
+    <div id="tgList" style="max-height:60vh;overflow-y:auto;display:flex;flex-direction:column;gap:8px">
+      ${treats.length ? treats.map(t => `
+        <details class="tg-item" data-tid="${t.id}" data-tname="${escapeHtml(t.name)}">
+          <summary><span>${escapeHtml(t.name)}</span><span class="tg-count" id="tgcount-${t.id}"></span></summary>
+          <div class="tg-body">
+            <div style="position:relative">
+              <input class="input tg-search" data-tid="${t.id}" placeholder="Buscar pacientes por nombre o teléfono…" autocomplete="off">
+              <div class="manual-suggest tg-results" data-tid="${t.id}" style="display:none"></div>
+            </div>
+            <div class="tg-members" data-tid="${t.id}"><div class="mini-note">Abriendo…</div></div>
+          </div>
+        </details>`).join("")
+        : `<div class="empty-state">No hay tratamientos dados de alta (Configuración → Tratamientos).</div>`}
+    </div>
+    <div class="actions"><button class="btn" onclick="closeModal()">Cerrar</button></div>
+  `, { onMount: (body) => {
+    async function loadMembers(tid) {
+      const box = body.querySelector(`.tg-members[data-tid="${tid}"]`);
+      const countEl = body.querySelector(`#tgcount-${tid}`);
+      try {
+        const { patients } = await api(`/api/treatments/${tid}/patients`);
+        countEl.textContent = patients.length ? `${patients.length}` : "0";
+        box.innerHTML = patients.length
+          ? patients.map(p => `<div class="tg-member">
+              <span>${escapeHtml(p.full_name)} <span style="color:var(--text-3)">${escapeHtml(fmtPhone(p.phone)||"")}</span></span>
+              <button class="chip-btn" title="Quitar del grupo" onclick="tgRemove('${tid}','${p.id}')">Quitar</button>
+            </div>`).join("")
+          : `<div class="mini-note">Aún no hay pacientes en este grupo.</div>`;
+      } catch (e) { box.innerHTML = `<div class="mini-note" style="color:var(--danger)">No se pudo cargar.</div>`; }
+    }
+    // Cargar miembros al abrir cada acordeón (una vez)
+    body.querySelectorAll(".tg-item").forEach(det => {
+      det.addEventListener("toggle", () => {
+        if (det.open && !det.dataset.loaded) { det.dataset.loaded = "1"; loadMembers(det.dataset.tid); }
+      });
+    });
+    // Reexpone loadMembers y helpers para los onclick globales
+    window.__tgReload = loadMembers;
+    // Buscador de pacientes por grupo (delegado)
+    let tgTimer;
+    body.addEventListener("input", (e) => {
+      const inp = e.target.closest(".tg-search"); if (!inp) return;
+      const tid = inp.dataset.tid;
+      const results = body.querySelector(`.tg-results[data-tid="${tid}"]`);
+      clearTimeout(tgTimer);
+      const q = inp.value.trim();
+      if (q.length < 2) { results.style.display = "none"; return; }
+      tgTimer = setTimeout(async () => {
+        try {
+          const { patients } = await api(`/api/patients?q=${encodeURIComponent(q)}&limit=15`);
+          if (!patients.length) { results.innerHTML = `<div style="padding:8px 10px;color:var(--text-3);font-size:13px">Sin resultados</div>`; results.style.display = "block"; return; }
+          const ids = patients.map(p => p.id).join(",");
+          results.innerHTML =
+            `<div class="tg-addall" data-tid="${tid}" data-ids="${ids}">+ Añadir los ${patients.length} resultados</div>` +
+            patients.map(p => `<div class="tg-res" data-tid="${tid}" data-pid="${p.id}">
+              <strong>${escapeHtml(p.full_name)}</strong> <span style="color:var(--text-3)">${escapeHtml(fmtPhone(p.phone)||"")}</span></div>`).join("");
+          results.style.display = "block";
+        } catch (_e) {}
+      }, 250);
+    });
+    // Clicks en resultados (añadir individual o masivo)
+    body.addEventListener("click", async (e) => {
+      const one = e.target.closest(".tg-res");
+      const all = e.target.closest(".tg-addall");
+      if (one) {
+        try { await api(`/api/treatments/${one.dataset.tid}/patients`, { method: "POST", body: { patient_ids: [one.dataset.pid] } });
+          toast("Añadido al grupo", "success"); one.remove(); loadMembers(one.dataset.tid); }
+        catch (err) { toast(err.message, "error"); }
+      } else if (all) {
+        const ids = all.dataset.ids.split(",").filter(Boolean);
+        try { await api(`/api/treatments/${all.dataset.tid}/patients`, { method: "POST", body: { patient_ids: ids } });
+          toast(`${ids.length} pacientes añadidos`, "success");
+          body.querySelector(`.tg-results[data-tid="${all.dataset.tid}"]`).style.display = "none";
+          loadMembers(all.dataset.tid); }
+        catch (err) { toast(err.message, "error"); }
+      }
+    });
+  }});
+}
+
+window.tgRemove = async function(treatmentId, patientId) {
+  try { await api(`/api/treatments/${treatmentId}/patients/${patientId}`, { method: "DELETE" });
+    if (window.__tgReload) window.__tgReload(treatmentId); }
+  catch (err) { toast(err.message, "error"); }
+};
+
+// ====================================================================
+// PRESUPUESTOS — tablero Pendiente de aceptación / Aceptado
+// ====================================================================
+async function renderBudgets() {
+  $main.innerHTML = `
+    <div class="page-header">
+      <h2>Presupuestos</h2>
+      <div class="actions"><button class="btn" id="budgetsRefresh">Actualizar</button></div>
+    </div>
+    <p style="color:var(--text-3);font-size:13px;margin:-6px 0 16px">
+      Presupuestos de primera visita. Mueve cada paciente entre "Pendiente de aceptación" y "Aceptado"; queda registrado en el CRM.
+    </p>
+    <div id="budgetsBoard"><div class="empty-state">Cargando…</div></div>
+  `;
+  document.getElementById("budgetsRefresh").onclick = () => renderBudgets();
+  try {
+    const { budgets } = await api("/api/budgets");
+    const board = document.getElementById("budgetsBoard");
+    if (!budgets.length) {
+      board.innerHTML = `<div class="empty-state" style="padding:30px">Todavía no hay pacientes con primera visita.<br><small>Aparecerán aquí en cuanto se agende una primera visita (es cuando se ofrece el presupuesto).</small></div>`;
+      return;
+    }
+    const pend = budgets.filter(b => b.status !== "aceptado");
+    const acc = budgets.filter(b => b.status === "aceptado");
+    const card = (b, target) => `
+      <div class="kb-card">
+        <div class="kb-name">${escapeHtml(b.full_name)}</div>
+        <div class="kb-meta">${escapeHtml(b.treatment || "Primera visita")} · ${fmtDate(b.first_visit_at)}${b.phone ? " · " + escapeHtml(fmtPhone(b.phone)||b.phone) : ""}</div>
+        <button class="btn ${target==="aceptado"?"primary":""}" style="margin-top:9px;padding:5px 11px;font-size:12px" onclick="moveBudget('${b.patient_id}','${target}')">
+          ${target==="aceptado" ? "Marcar aceptado →" : "← Volver a pendiente"}
+        </button>
+      </div>`;
+    board.innerHTML = `
+      <div class="kanban">
+        <div class="kb-col">
+          <div class="kb-head kb-head-pend">Pendiente de aceptación <span class="kb-count">${pend.length}</span></div>
+          <div class="kb-list">${pend.length ? pend.map(b => card(b, "aceptado")).join("") : `<div class="mini-note" style="padding:10px">Ninguno.</div>`}</div>
+        </div>
+        <div class="kb-col">
+          <div class="kb-head kb-head-acc">Aceptado <span class="kb-count">${acc.length}</span></div>
+          <div class="kb-list">${acc.length ? acc.map(b => card(b, "pendiente")).join("") : `<div class="mini-note" style="padding:10px">Ninguno.</div>`}</div>
+        </div>
+      </div>`;
+  } catch (err) { toast(err.message, "error"); }
+}
+
+window.moveBudget = async function(patientId, status) {
+  try {
+    await api(`/api/budgets/${patientId}`, { method: "PUT", body: { status } });
+    toast(status === "aceptado" ? "Presupuesto aceptado" : "Movido a pendiente", "success");
+    renderBudgets();
+  } catch (err) { toast(err.message, "error"); }
+};
 
 function openPatientModal(existing) {
   const p = existing || {};
@@ -1583,11 +1783,20 @@ async function renderPatientDetail(id) {
         </div>
         <div class="card" style="grid-column:1/-1">
           <h3>Historial clínico</h3>
-          <div id="historyList"></div>
-          <div class="row-flex" style="margin-top:10px">
-            <input class="input" id="newHistTxt" placeholder="Añadir nota al historial…" />
-            <button class="btn primary" id="addHistBtn">+</button>
+          <div style="margin-bottom:12px">
+            <div style="font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--text-3);margin-bottom:7px">Tratamientos del paciente</div>
+            <div id="patientTreatChips" class="chips"></div>
           </div>
+          <div id="historyList"></div>
+          <div class="row-flex" style="margin-top:12px;flex-wrap:wrap;gap:8px">
+            <select class="select" id="newHistTreat" style="max-width:240px">
+              <option value="">Tratamiento (opcional)…</option>
+              ${(cache.treatments||[]).map(t=>`<option value="${t.id}">${escapeHtml(t.name)}</option>`).join("")}
+            </select>
+            <input class="input" id="newHistTxt" placeholder="Añadir nota (opcional)…" style="flex:1;min-width:180px" />
+            <button class="btn primary" id="addHistBtn">Añadir</button>
+          </div>
+          <small style="color:var(--text-3);font-size:11px">Elige un tratamiento para etiquetar al paciente (mejora la segmentación de campañas) y/o escribe una nota.</small>
         </div>
       </div>
     `;
@@ -1635,6 +1844,14 @@ async function renderPatientDetail(id) {
       : `<div class="empty-state" style="padding:14px">Sin cobros registrados.</div>`;
     document.getElementById("addPayment").onclick = () => openPaymentModal(id);
 
+    // Tratamientos del paciente (etiquetas para segmentar campañas)
+    const treatChips = document.getElementById("patientTreatChips");
+    const pTreatments = data.treatments || [];
+    treatChips.innerHTML = pTreatments.length
+      ? pTreatments.map(t => `<span class="chip">${escapeHtml(t.name)}
+          <button type="button" title="Quitar" onclick="removePatientTreatment('${id}','${t.id}')">×</button></span>`).join("")
+      : `<span style="color:var(--text-3);font-size:12px">Sin tratamientos asignados.</span>`;
+
     // Historial
     document.getElementById("historyList").innerHTML = data.history.length
       ? data.history.map(h => `<div style="padding:8px 0;border-bottom:1px solid var(--line);font-size:13px">
@@ -1644,8 +1861,9 @@ async function renderPatientDetail(id) {
       : `<div class="empty-state" style="padding:14px">Sin notas.</div>`;
     document.getElementById("addHistBtn").onclick = async () => {
       const note = document.getElementById("newHistTxt").value.trim();
-      if (!note) return;
-      try { await api(`/api/patients/${id}/history`, { method: "POST", body: { note } }); renderPatientDetail(id); }
+      const treatment_id = document.getElementById("newHistTreat").value || null;
+      if (!note && !treatment_id) { toast("Añade una nota o un tratamiento", "error"); return; }
+      try { await api(`/api/patients/${id}/history`, { method: "POST", body: { note, treatment_id } }); renderPatientDetail(id); }
       catch (err) { toast(err.message, "error"); }
     };
   } catch (err) { toast(err.message, "error"); }
@@ -1653,6 +1871,11 @@ async function renderPatientDetail(id) {
 
 window.togglePending = async function(pid, pendingId, done) {
   try { await api(`/api/patients/${pid}/pending/${pendingId}`, { method: "PATCH", body: { done } }); }
+  catch (err) { toast(err.message, "error"); }
+};
+
+window.removePatientTreatment = async function(patientId, treatmentId) {
+  try { await api(`/api/patients/${patientId}/treatments/${treatmentId}`, { method: "DELETE" }); renderPatientDetail(patientId); }
   catch (err) { toast(err.message, "error"); }
 };
 
@@ -1914,7 +2137,7 @@ async function renderConversations() {
     }
     document.getElementById("convCard").innerHTML = `
       <table>
-        <thead><tr><th>Contacto</th><th>Canal</th><th>Idioma</th><th>Estado</th><th>Bot</th><th>Última actividad</th><th></th></tr></thead>
+        <thead><tr><th>Contacto</th><th>Canal</th><th>Estado</th><th>Bot</th><th>Última actividad</th><th></th></tr></thead>
         <tbody>
           ${conversations.map(c => `
             <tr class="row-click" onclick="location.hash='conversation/${c.id}'">
@@ -1923,7 +2146,6 @@ async function renderConversations() {
                 <div style="color:var(--text-3);font-size:11px">${escapeHtml(c.customer_phone || c.customer_email || "")}</div>
               </td>
               <td>${c.channel === "whatsapp" ? "WhatsApp" : "Web"}</td>
-              <td>${c.language === "ca" ? "Català" : "Español"}</td>
               <td>
                 <span class="badge badge-${c.status}">${c.status === "closed" ? "Cerrada" : "Activa"}</span>
                 ${c.is_urgent ? '<span class="badge badge-urgent">Urgente</span>' : ""}
@@ -2191,8 +2413,15 @@ async function renderMarketing() {
               <td>${c.sent_at ? fmtDateTime(c.sent_at) : "—"}</td>
               <td style="white-space:nowrap;text-align:right">
                 ${c.status !== "sent" && c.status !== "cancelled" ? `<button class="btn primary" style="padding:5px 10px;font-size:12px;margin-right:6px" onclick="sendCampaign('${c.id}')">Enviar ahora</button>` : ""}
+                <button class="btn" style="padding:5px 10px;font-size:12px;margin-right:6px" onclick="showTemplateExample('${c.message_template || ""}')">Ver ejemplo</button>
                 <button class="btn" style="padding:5px 10px;font-size:12px" onclick="showCampaignDetails('${c.id}')">Ver detalles</button>
-                <button class="btn danger" style="padding:5px 10px;font-size:12px;margin-left:6px" onclick="deleteCampaign('${c.id}')">Eliminar</button>
+                <button class="icon-btn danger" title="Eliminar campaña" style="margin-left:8px" onclick="deleteCampaign('${c.id}')">
+                  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="3 6 5 6 21 6"/>
+                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                    <line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/>
+                  </svg>
+                </button>
               </td>
             </tr>
           `).join("")}
@@ -2220,6 +2449,48 @@ window.deleteCampaign = async function (id) {
     closeModal();
     renderMarketing();
   } catch (err) { toast(err.message, "error"); }
+};
+
+// Rellena las variables {{1}}, {{2}}… con los valores de ejemplo de la plantilla.
+function fillTemplateVars(text, values) {
+  return String(text || "").replace(/\{\{\s*(\d+)\s*\}\}/g, (m, n) => {
+    const v = values && values[Number(n) - 1];
+    return v != null && v !== "" ? v : m;
+  });
+}
+function renderTemplatePreview(t) {
+  const comps = t.components || [];
+  const byType = (ty) => comps.find(c => String(c.type || "").toUpperCase() === ty);
+  const header = byType("HEADER"), body = byType("BODY"), footer = byType("FOOTER");
+  const bodyVals = body?.example?.body_text?.[0] || [];
+  const headerVals = header?.example?.header_text || [];
+  const parts = [];
+  if (header && String(header.format || "TEXT").toUpperCase() === "TEXT" && header.text)
+    parts.push(`<div style="font-weight:700;margin-bottom:7px">${escapeHtml(fillTemplateVars(header.text, headerVals))}</div>`);
+  if (body?.text)
+    parts.push(`<div style="white-space:pre-wrap">${escapeHtml(fillTemplateVars(body.text, bodyVals))}</div>`);
+  if (footer?.text)
+    parts.push(`<div style="color:var(--text-3);font-size:12px;margin-top:9px">${escapeHtml(footer.text)}</div>`);
+  return `<div class="wa-preview">${parts.join("") || "(plantilla sin texto)"}</div>`;
+}
+// "Ver ejemplo": muestra cómo le llegaría el mensaje al paciente (con los valores de ejemplo).
+window.showTemplateExample = async function (templateName) {
+  if (!templateName) { toast("Esta campaña no tiene plantilla asignada.", "error"); return; }
+  openModal(`
+    <h3>Ejemplo del mensaje</h3>
+    <div style="color:var(--text-3);font-size:12px;margin:-4px 0 12px">Plantilla: <strong>${escapeHtml(templateName)}</strong></div>
+    <div id="tplExampleBody" class="empty-state" style="text-align:left;padding:8px 2px">Cargando…</div>
+    <div class="actions"><button class="btn" onclick="closeModal()">Cerrar</button></div>
+  `, { onMount: async () => {
+    const box = document.getElementById("tplExampleBody");
+    try {
+      const { templates, configured } = await api("/api/marketing/templates");
+      if (!configured) { box.innerHTML = "Conecta WhatsApp para ver las plantillas."; return; }
+      const t = (templates || []).find(x => x.name === templateName);
+      if (!t) { box.innerHTML = `No se encontró la plantilla "${escapeHtml(templateName)}" en Meta (quizá se eliminó).`; return; }
+      box.innerHTML = renderTemplatePreview(t);
+    } catch (e) { box.innerHTML = escapeHtml(e.message); }
+  }});
 };
 
 // Envío MANUAL "ahora": manda la plantilla por WhatsApp a los pacientes del segmento.
@@ -2573,9 +2844,9 @@ function openMetaTemplateModal() {
       <textarea class="textarea" id="tplBody" rows="6" maxlength="1024" placeholder="Hola {{1}}, le recordamos que ya puede reservar su limpieza general en Dental Fortes. ¿Qué día le iría bien?"></textarea>
       <small style="color:var(--text-3)">Para personalizar, pulsa «Añadir variable»: Meta exige variables numeradas ({{1}}, {{2}}…) que se rellenan con los datos del paciente. No escribas {{nombre}}.</small>
     </div></div>
-    <div class="row single"><div class="field"><label>Ejemplos para Meta (si usas variables)</label>
-      <input class="input" id="tplExamples" placeholder="Juan, limpieza general" />
-      <small style="color:var(--text-3)">Un ejemplo por variable, en orden. Si el texto tiene {{1}}, escribe un ejemplo; si tiene {{1}} y {{2}}, separa con coma.</small>
+    <div class="row single"><div class="field"><label>Valores de ejemplo para Meta</label>
+      <div id="tplVarRows" class="tpl-var-rows"></div>
+      <small style="color:var(--text-3)" id="tplVarHint">Cuando el texto tenga variables ({{1}}, {{2}}…), aquí aparecerá una fila por cada una para escribir su valor de ejemplo (lo exige Meta).</small>
     </div></div>
     <div class="row single"><div class="field"><label>Pie (opcional)</label>
       <input class="input" id="tplFooter" maxlength="60" placeholder="Responda a este WhatsApp y le ayudamos." />
@@ -2615,6 +2886,32 @@ function openMetaTemplateModal() {
       tplBody.dispatchEvent(new Event("input", { bubbles: true }));
     };
 
+    // Editor de variables en 2 columnas: izquierda la variable ({{1}}, {{2}}…) que haya en el
+    // texto, derecha su valor de ejemplo. Se mantiene en sync con el texto de la plantilla.
+    const varRows = body.querySelector("#tplVarRows");
+    const varHint = body.querySelector("#tplVarHint");
+    function syncVarRows() {
+      const nums = (tplBody.value.match(/\{\{\s*(\d+)\s*\}\}/g) || [])
+        .map((s) => parseInt(s.replace(/[^0-9]/g, ""), 10));
+      const maxN = nums.length ? Math.max(...nums) : 0;
+      // Conserva los valores ya escritos por número de variable.
+      const prev = {};
+      varRows.querySelectorAll(".tpl-var-val").forEach((i) => { prev[i.dataset.n] = i.value; });
+      if (!maxN) { varRows.innerHTML = ""; varHint.style.display = "block"; return; }
+      varHint.style.display = "none";
+      let html = "";
+      for (let n = 1; n <= maxN; n++) {
+        const v = prev[n] != null ? String(prev[n]).replace(/"/g, "&quot;") : "";
+        html += `<div class="tpl-var-row">
+          <span class="tpl-var-tag">{{${n}}}</span>
+          <input class="input tpl-var-val" data-n="${n}" value="${v}" placeholder="Valor de ejemplo para {{${n}}}">
+        </div>`;
+      }
+      varRows.innerHTML = html;
+    }
+    tplBody.addEventListener("input", syncVarRows);
+    syncVarRows();
+
     body.querySelector("#saveTpl").onclick = async () => {
       const btn = body.querySelector("#saveTpl");
       const result = body.querySelector("#tplResult");
@@ -2622,13 +2919,17 @@ function openMetaTemplateModal() {
       btn.disabled = true;
       btn.textContent = "Creando…";
       try {
+        // Valores de ejemplo en orden de variable (array; el servidor lo acepta tal cual).
+        const exampleValues = [...body.querySelectorAll(".tpl-var-val")]
+          .sort((a, b) => Number(a.dataset.n) - Number(b.dataset.n))
+          .map((i) => i.value.trim());
         const data = await api("/api/marketing/templates", { method: "POST", body: {
           name: body.querySelector("#tplName").value.trim(),
           category: body.querySelector("#tplCategory").value,
           language: body.querySelector("#tplLanguage").value,
           header_text: body.querySelector("#tplHeader").value.trim(),
           body_text: body.querySelector("#tplBody").value.trim(),
-          body_examples: body.querySelector("#tplExamples").value.trim(),
+          body_examples: exampleValues,
           footer_text: body.querySelector("#tplFooter").value.trim(),
           allow_category_change: true,
         }});

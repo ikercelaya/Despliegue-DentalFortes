@@ -1247,7 +1247,7 @@ app.patch("/api/urgencies/:id", requireAuth, async (req, res) => {
 // =============================================================
 app.get("/api/patients", requireAuth, async (req, res) => {
   try {
-    const { q, state, tag, limit } = req.query;
+    const { q, state, tag, treatment_id, limit } = req.query;
     let query = supabase
       .from("df_patients")
       .select("id, full_name, phone, email, birth_date, language, patient_state, tags, marketing_consent, created_at, updated_at")
@@ -1255,6 +1255,14 @@ app.get("/api/patients", requireAuth, async (req, res) => {
       .limit(Math.min(500, Number(limit) || 200));
     if (state) query = query.eq("patient_state", state);
     if (tag) query = query.contains("tags", [tag]);
+    // Filtro por tratamiento: solo los pacientes etiquetados con ese tratamiento.
+    if (treatment_id) {
+      const { data: links } = await supabase
+        .from("df_patient_treatments").select("patient_id").eq("treatment_id", treatment_id);
+      const ids = (links || []).map((l) => l.patient_id);
+      if (!ids.length) return res.json({ patients: [] });
+      query = query.in("id", ids);
+    }
     if (q) query = query.or(`full_name.ilike.%${q}%,phone.ilike.%${q}%,email.ilike.%${q}%`);
     const { data, error } = await query;
     if (error) throw error;
@@ -1298,15 +1306,17 @@ app.get("/api/patients/:id", requireAuth, async (req, res) => {
       .from("df_patients").select("*").eq("id", req.params.id).maybeSingle();
     if (error) throw error;
     if (!patient) return res.status(404).json({ error: "Paciente no encontrado." });
-    const [{ data: pending }, { data: history }, { data: payments }, { data: appointments }] = await Promise.all([
+    const [{ data: pending }, { data: history }, { data: payments }, { data: appointments }, { data: trLinks }] = await Promise.all([
       supabase.from("df_patient_pending").select("*").eq("patient_id", req.params.id).order("created_at", { ascending: false }),
       supabase.from("df_patient_history").select("*").eq("patient_id", req.params.id).order("created_at", { ascending: false }),
       supabase.from("df_patient_payments").select("*").eq("patient_id", req.params.id).order("created_at", { ascending: false }),
       supabase.from("df_appointments")
         .select("*, df_professionals(name, specialty), df_treatments(name)")
         .eq("patient_id", req.params.id).order("starts_at", { ascending: false }).limit(50),
+      supabase.from("df_patient_treatments").select("treatment_id, df_treatments(id, name)").eq("patient_id", req.params.id),
     ]);
-    return res.json({ patient, pending: pending || [], history: history || [], payments: payments || [], appointments: appointments || [] });
+    const treatments = (trLinks || []).map((l) => ({ id: l.treatment_id, name: l.df_treatments?.name || "—" }));
+    return res.json({ patient, pending: pending || [], history: history || [], payments: payments || [], appointments: appointments || [], treatments });
   } catch (err) {
     console.error("[patients/get]", err);
     return res.status(500).json({ error: err.message });
@@ -1373,14 +1383,145 @@ app.patch("/api/patients/:id/pending/:pid", requireAuth, async (req, res) => {
 
 app.post("/api/patients/:id/history", requireAuth, async (req, res) => {
   try {
-    const { note, appointment_id } = req.body || {};
-    if (!note) return res.status(400).json({ error: "Falta nota." });
-    const { data, error } = await supabase
-      .from("df_patient_history")
-      .insert({ patient_id: req.params.id, note, appointment_id: appointment_id || null })
-      .select().single();
+    const { note, appointment_id, treatment_id } = req.body || {};
+    const cleanNote = String(note || "").trim();
+    // El apunte de historial puede llevar una nota, un tratamiento (etiqueta para
+    // segmentar campañas) o ambos. Al menos uno de los dos.
+    if (!cleanNote && !treatment_id) return res.status(400).json({ error: "Añade una nota o un tratamiento." });
+    let history = null;
+    if (cleanNote) {
+      const { data, error } = await supabase
+        .from("df_patient_history")
+        .insert({ patient_id: req.params.id, note: cleanNote, appointment_id: appointment_id || null })
+        .select().single();
+      if (error) throw error;
+      history = data;
+    }
+    // Si se indica tratamiento, se etiqueta al paciente (sin duplicar).
+    if (treatment_id) {
+      await supabase
+        .from("df_patient_treatments")
+        .upsert({ patient_id: req.params.id, treatment_id }, { onConflict: "patient_id,treatment_id", ignoreDuplicates: true });
+    }
+    return res.json({ history });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// --- Etiquetas de tratamiento por paciente (grupos para segmentar campañas) ---
+app.post("/api/patients/:id/treatments", requireAuth, async (req, res) => {
+  try {
+    const treatment_id = req.body?.treatment_id;
+    if (!treatment_id) return res.status(400).json({ error: "Falta el tratamiento." });
+    const { error } = await supabase
+      .from("df_patient_treatments")
+      .upsert({ patient_id: req.params.id, treatment_id }, { onConflict: "patient_id,treatment_id", ignoreDuplicates: true });
     if (error) throw error;
-    return res.json({ history: data });
+    return res.json({ ok: true });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete("/api/patients/:id/treatments/:treatmentId", requireAuth, async (req, res) => {
+  try {
+    const { error } = await supabase
+      .from("df_patient_treatments")
+      .delete().eq("patient_id", req.params.id).eq("treatment_id", req.params.treatmentId);
+    if (error) throw error;
+    return res.json({ ok: true });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// --- Grupos por tratamiento (etiquetado masivo desde Configuración de Pacientes) ---
+// Lista los pacientes de un grupo (los etiquetados con ese tratamiento).
+app.get("/api/treatments/:id/patients", requireAuth, async (req, res) => {
+  try {
+    const { data: links } = await supabase
+      .from("df_patient_treatments").select("patient_id").eq("treatment_id", req.params.id);
+    const ids = (links || []).map((l) => l.patient_id);
+    if (!ids.length) return res.json({ patients: [] });
+    const { data: patients } = await supabase
+      .from("df_patients").select("id, full_name, phone, email").in("id", ids).order("full_name");
+    return res.json({ patients: patients || [] });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// Añade pacientes a un grupo (individual o masivo).
+app.post("/api/treatments/:id/patients", requireAuth, async (req, res) => {
+  try {
+    const ids = Array.isArray(req.body?.patient_ids) ? req.body.patient_ids : [];
+    if (!ids.length) return res.status(400).json({ error: "No hay pacientes que añadir." });
+    const rows = ids.map((pid) => ({ patient_id: pid, treatment_id: req.params.id }));
+    const { error } = await supabase
+      .from("df_patient_treatments").upsert(rows, { onConflict: "patient_id,treatment_id", ignoreDuplicates: true });
+    if (error) throw error;
+    return res.json({ ok: true, added: ids.length });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete("/api/treatments/:id/patients/:patientId", requireAuth, async (req, res) => {
+  try {
+    const { error } = await supabase
+      .from("df_patient_treatments")
+      .delete().eq("treatment_id", req.params.id).eq("patient_id", req.params.patientId);
+    if (error) throw error;
+    return res.json({ ok: true });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// =============================================================
+// PRESUPUESTOS (primera visita) — aceptado / pendiente de aceptación
+// =============================================================
+app.get("/api/budgets", requireAuth, async (_req, res) => {
+  try {
+    // Pacientes con al menos una PRIMERA VISITA (ahí se ofrece el presupuesto).
+    const { data: firstVisits } = await supabase
+      .from("df_appointments")
+      .select("patient_id, starts_at, df_patients(id, full_name, phone), df_treatments(name)")
+      .eq("is_first_visit", true)
+      .neq("status", "cancelled")
+      .not("patient_id", "is", null)
+      .order("starts_at", { ascending: false });
+    // Un registro por paciente (su primera visita más reciente).
+    const byPatient = {};
+    for (const a of firstVisits || []) {
+      if (!a.patient_id || byPatient[a.patient_id]) continue;
+      byPatient[a.patient_id] = {
+        patient_id: a.patient_id,
+        full_name: a.df_patients?.full_name || "—",
+        phone: a.df_patients?.phone || null,
+        first_visit_at: a.starts_at,
+        treatment: a.df_treatments?.name || null,
+      };
+    }
+    const { data: budgets } = await supabase.from("df_patient_budgets").select("patient_id, status");
+    const statusById = Object.fromEntries((budgets || []).map((b) => [b.patient_id, b.status]));
+    const list = Object.values(byPatient).map((p) => ({ ...p, status: statusById[p.patient_id] || "pendiente" }));
+    return res.json({ budgets: list });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+app.put("/api/budgets/:patientId", requireAuth, async (req, res) => {
+  try {
+    const status = String(req.body?.status || "").trim();
+    if (!["pendiente", "aceptado"].includes(status)) return res.status(400).json({ error: "Estado no válido." });
+    const { error } = await supabase
+      .from("df_patient_budgets")
+      .upsert({ patient_id: req.params.patientId, status, updated_at: new Date().toISOString() }, { onConflict: "patient_id" });
+    if (error) throw error;
+    return res.json({ ok: true });
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
@@ -1832,6 +1973,16 @@ async function matchCampaignPatients({ segments = [], treatments = [], ageRanges
       (apptsByPatient[a.patient_id] = apptsByPatient[a.patient_id] || []).push(a);
     }
   }
+  // Etiquetas de tratamiento asignadas a mano (df_patient_treatments): así los pacientes
+  // importados sin historial de citas también entran en el segmento "por tratamiento".
+  const taggedTreatByPatient = {};
+  if (wantTrat) {
+    const { data: tags } = await supabase.from("df_patient_treatments").select("patient_id, treatment_id");
+    for (const t of tags || []) {
+      if (!t.patient_id) continue;
+      (taggedTreatByPatient[t.patient_id] = taggedTreatByPatient[t.patient_id] || new Set()).add(String(t.treatment_id));
+    }
+  }
   const pendingByPatient = {};
   if (wantPresu) {
     const { data: pays } = await supabase.from("df_patient_payments").select("patient_id, paid");
@@ -1855,7 +2006,9 @@ async function matchCampaignPatients({ segments = [], treatments = [], ageRanges
     }
     if (!match && wantTrat && treatSet.size) {
       const list = apptsByPatient[pt.id] || [];
+      const tagged = taggedTreatByPatient[pt.id];
       if (list.some((a) => a.treatment_id && treatSet.has(String(a.treatment_id)))) match = true;
+      else if (tagged && [...treatSet].some((tid) => tagged.has(tid))) match = true;
     }
     if (!match && wantInact) {
       const list = apptsByPatient[pt.id] || [];
@@ -2132,7 +2285,7 @@ app.get("/api/marketing/templates", requireAuth, async (_req, res) => {
     const token = process.env.WHATSAPP_TOKEN || "";
     if (!wabaId || !token) return res.json({ templates: [], configured: false });
 
-    const url = `${META_GRAPH_BASE}/${wabaId}/message_templates?limit=200&fields=name,status,category,language`;
+    const url = `${META_GRAPH_BASE}/${wabaId}/message_templates?limit=200&fields=name,status,category,language,components`;
     const metaRes = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
     const metaData = await metaRes.json().catch(() => ({}));
     if (!metaRes.ok) {
