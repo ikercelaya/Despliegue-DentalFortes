@@ -343,9 +343,11 @@ table td, .agenda-grid .hour { font-variant-numeric: tabular-nums; }
 /* Previsualización de plantilla estilo WhatsApp */
 .wa-preview { background:#E7F7DE; border:1px solid #CDE9C0; border-radius:12px; border-top-left-radius:3px; padding:12px 14px; font-size:14px; line-height:1.5; color:#1F2A22; box-shadow:var(--shadow-sm); max-width:420px; }
 /* Facturación: calendario + totales de caja (rediseño premium) */
-.bill-top { display:grid; grid-template-columns:1fr 1fr; gap:18px; align-items:stretch; margin-bottom:18px; }
-@media (max-width:900px){ .bill-top { grid-template-columns:1fr; } }
+.bill-top { display:grid; grid-template-columns:minmax(300px,430px) 1fr; gap:18px; align-items:stretch; margin-bottom:18px; }
+@media (max-width:900px){ .bill-top { grid-template-columns:1fr; } .bill-cal-card { max-width:470px; } }
 .bill-cal-card { display:flex; flex-direction:column; justify-content:center; }
+.bill-side { display:flex; flex-direction:column; }
+.bill-side .bill-stats { flex:1; }
 .bill-date { font-size:13px; color:var(--text-3); text-transform:capitalize; margin-bottom:12px; font-weight:600; }
 .cal-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:14px; font-weight:700; color:var(--text); }
 .cal-nav { width:32px; height:32px; border:1px solid var(--line-2); background:#fff; border-radius:9px; cursor:pointer; color:var(--text-2); font-size:16px; transition:background .15s,border-color .15s; }
@@ -503,6 +505,47 @@ table td, .agenda-grid .hour { font-variant-numeric: tabular-nums; }
 .trt-pro-chk { display:flex; align-items:center; gap:7px; font-size:13px; color:var(--text-2); cursor:pointer; }
 .trt-pro-chk input { width:15px; height:15px; accent-color:var(--silver); cursor:pointer; }
 
+/* ===== NAVEGACIÓN TIPO DRAWER (tablet/móvil). Oculta en escritorio. ===== */
+.nav-toggle { display:none; position:fixed; top:14px; left:14px; z-index:260; width:44px; height:44px;
+  align-items:center; justify-content:center; background:#fff; border:1px solid var(--line-2);
+  border-radius:12px; box-shadow:var(--shadow-md); cursor:pointer; color:var(--text); }
+.nav-toggle svg { width:22px; height:22px; }
+.nav-backdrop { display:none; position:fixed; inset:0; background:rgba(28,32,48,.45); backdrop-filter:blur(2px); z-index:245; }
+
+/* ===== TABLET (≤1024px): el diseño de escritorio queda intacto por encima. ===== */
+@media (max-width:1024px){
+  .app { grid-template-columns:1fr; }
+  .sidebar { position:fixed; top:0; left:0; bottom:0; width:264px; z-index:250;
+    transform:translateX(-100%); transition:transform .28s var(--ease); }
+  .sidebar.open { transform:none; box-shadow:0 0 50px rgba(20,24,40,.5); }
+  .nav-toggle { display:flex; }
+  .nav-backdrop.show { display:block; }
+  .main { padding:70px 22px 26px; }
+  .page-header h2 { font-size:22px; }
+  .notif-panel { left:18px; }
+  /* Tablas anchas: scroll horizontal dentro de su tarjeta (mantiene columnas alineadas) */
+  .card { overflow-x:auto; }
+  .card > table { min-width:540px; }
+  /* Agenda semanal: scroll horizontal para no comprimir los días */
+  #agendaContainer { overflow-x:auto; -webkit-overflow-scrolling:touch; }
+  .agenda-grid { min-width:700px; }
+  /* Estadísticas por profesional: no comprimir las columnas */
+  .prof-row { min-width:520px; }
+}
+/* ===== TABLET ESTRECHA / MÓVIL (≤768px) ===== */
+@media (max-width:768px){
+  .main { padding:66px 14px 20px; }
+  .page-header { align-items:stretch; }
+  .grid-2, .grid-3 { grid-template-columns:1fr; }
+  .modal { padding:18px; }
+  .modal .row { grid-template-columns:1fr; }
+  .bill-top { grid-template-columns:1fr; }
+  .bill-cal-card { max-width:none; }
+  .dash-filters { gap:10px; }
+  .dash-filters .select, .dash-filters .input { min-width:0; width:100%; }
+  .dash-filters .field { flex:1 1 140px; }
+}
+
   </style>
 </head>
 <body>
@@ -526,6 +569,10 @@ table td, .agenda-grid .hour { font-variant-numeric: tabular-nums; }
 
 <!-- ============ APP ============ -->
 <div id="appScreen" class="app" style="display:none">
+  <button class="nav-toggle" id="navToggle" aria-label="Abrir menú" aria-expanded="false">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+  </button>
+  <div class="nav-backdrop" id="navBackdrop"></div>
   <aside class="sidebar">
     <div class="sb-top">
       <img src="/logo.png" alt="Dental Fortes" id="sidebarLogo" onerror="this.onerror=null;this.src='/logo.svg'" />
@@ -834,8 +881,18 @@ function route(path) {
 }
 document.getElementById("sbNav").addEventListener("click", (e) => {
   const item = e.target.closest(".nav-item");
-  if (item && item.dataset.route) location.hash = item.dataset.route;
+  if (item && item.dataset.route) { location.hash = item.dataset.route; closeNav(); }
 });
+
+// ===== Menú lateral tipo "drawer" en tablet/móvil =====
+const _sidebarEl = document.querySelector(".sidebar");
+const _navToggleEl = document.getElementById("navToggle");
+const _navBackdropEl = document.getElementById("navBackdrop");
+function openNav() { _sidebarEl.classList.add("open"); _navBackdropEl.classList.add("show"); if (_navToggleEl) _navToggleEl.setAttribute("aria-expanded", "true"); }
+function closeNav() { if (!_sidebarEl) return; _sidebarEl.classList.remove("open"); _navBackdropEl.classList.remove("show"); if (_navToggleEl) _navToggleEl.setAttribute("aria-expanded", "false"); }
+if (_navToggleEl) _navToggleEl.addEventListener("click", () => { _sidebarEl.classList.contains("open") ? closeNav() : openNav(); });
+if (_navBackdropEl) _navBackdropEl.addEventListener("click", closeNav);
+window.addEventListener("keydown", (e) => { if (e.key === "Escape") closeNav(); });
 
 // ====================================================================
 // 1) DASHBOARD
@@ -1357,7 +1414,7 @@ async function renderBilling(dateStr, viewMonthStr) {
     <div class="page-header"><h2>Facturación</h2></div>
     <div class="bill-top">
       <div class="card fade-up bill-cal-card" id="billCalCard">${buildBillCalendar(vy, vm, date)}</div>
-      <div class="fade-up">
+      <div class="fade-up bill-side">
         <div class="bill-date">${prettyDate}</div>
         <div class="bill-stats">
           <div class="stat-tile is-input" style="--tile-accent:#557AC6;--tile-soft:#EEF3FC">
