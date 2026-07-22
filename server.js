@@ -1003,11 +1003,22 @@ app.get("/api/cancellations", requireAuth, async (_req, res) => {
 app.patch("/api/cancellations/:id", requireAuth, async (req, res) => {
   try {
     const status = req.body?.status === "handled" ? "handled" : "pending";
+    // Recuperamos la solicitud para saber a qué cita apunta.
+    const { data: reqRow } = await supabase
+      .from("df_cancellation_requests").select("id, appointment_id").eq("id", req.params.id).maybeSingle();
     const { error } = await supabase.from("df_cancellation_requests")
       .update({ status, handled_at: status === "handled" ? new Date().toISOString() : null })
       .eq("id", req.params.id);
     if (error) throw error;
-    return res.json({ ok: true });
+    // Al marcar la solicitud como GESTIONADA, la cita asociada se cancela y
+    // desaparece de la agenda (se conserva el registro con estado "cancelled").
+    let appointmentCancelled = false;
+    if (status === "handled" && reqRow?.appointment_id) {
+      const { error: aErr } = await supabase.from("df_appointments")
+        .update({ status: "cancelled" }).eq("id", reqRow.appointment_id);
+      if (!aErr) appointmentCancelled = true;
+    }
+    return res.json({ ok: true, appointmentCancelled });
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }

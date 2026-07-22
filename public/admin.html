@@ -1008,7 +1008,8 @@ async function renderDashboard() {
     // Próximas citas
     const from = new Date(); from.setHours(0,0,0,0);
     const to = new Date(from); to.setDate(to.getDate() + 7);
-    const { appointments } = await api(`/api/appointments?from=${from.toISOString()}&to=${to.toISOString()}`);
+    const { appointments: upcomingAll } = await api(`/api/appointments?from=${from.toISOString()}&to=${to.toISOString()}`);
+    const appointments = (upcomingAll || []).filter(a => a.status !== "cancelled");
     document.getElementById("upcoming").innerHTML = !appointments.length
       ? `<div class="empty-state">Sin citas en los próximos 7 días.</div>`
       : `<table>
@@ -1642,8 +1643,13 @@ async function loadCancellations() {
   } catch (_e) { box.innerHTML = ""; }
 }
 window.dismissCancellation = async function(id) {
-  try { await api(`/api/cancellations/${id}`, { method: "PATCH", body: { status: "handled" } }); loadCancellations(); }
-  catch (err) { toast(err.message, "error"); }
+  try {
+    const r = await api(`/api/cancellations/${id}`, { method: "PATCH", body: { status: "handled" } });
+    toast(r && r.appointmentCancelled ? "Gestionada · cita eliminada de la agenda" : "Solicitud gestionada", "success");
+    // Re-render de la agenda: refresca el aviso y hace desaparecer la cita cancelada del calendario.
+    if (location.hash.replace(/^#/, "").split("/")[0] === "agenda") renderAgenda();
+    else loadCancellations();
+  } catch (err) { toast(err.message, "error"); }
 };
 
 // ---- Urgencias pendientes (bajo el calendario) ----
@@ -1759,7 +1765,9 @@ async function renderAgenda() {
     const from = new Date(ws); const to = new Date(ws); to.setDate(to.getDate() + 5); to.setHours(23,59,59);
     let url = `/api/appointments?from=${from.toISOString()}&to=${to.toISOString()}`;
     if (agendaState.professionalId) url += `&professional_id=${agendaState.professionalId}`;
-    const { appointments } = await api(url);
+    const { appointments: allAppts } = await api(url);
+    // Las citas canceladas (p. ej. al gestionar una solicitud de cancelación) no se muestran.
+    const appointments = (allAppts || []).filter(a => a.status !== "cancelled");
 
     // Franjas de la clínica: 9:30 (media hora inicial), luego cada hora hasta las 19:00
     // (la fila 19:00 agrupa las citas de las 19:00 y 19:30). No mostramos 9:00 ni 20:00
