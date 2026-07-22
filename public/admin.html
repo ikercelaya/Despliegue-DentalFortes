@@ -280,10 +280,12 @@ table tr.row-click { cursor: pointer; }
 .appt .tick { display: inline-flex; align-items: center; justify-content: center; width: 14px; height: 14px; border-radius: 50%; background: var(--success); color: #fff; font-size: 9px; font-weight: 900; line-height: 1; margin-right: 3px; vertical-align: -2px; flex-shrink: 0; }
 
 /* ===== AGENDA por BOXES (3 columnas por día) ===== */
-.ag-viewbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.ag-viewlabel { font-size: 12px; font-weight: 700; color: var(--text-2); text-transform: uppercase; letter-spacing: .4px; }
+/* Controles alineados: cada uno con su etiqueta encima y los campos a la misma altura. */
+.ag-controls { align-items: flex-end; gap: 16px; }
+.ag-ctrl { display: flex; flex-direction: column; gap: 5px; }
+.ag-ctrl-lbl { font-size: 11px; font-weight: 700; color: var(--text-3); text-transform: uppercase; letter-spacing: .4px; white-space: nowrap; }
 .seg-toggle { display: inline-flex; border: 1px solid var(--line-2); border-radius: 10px; overflow: hidden; background: #fff; box-shadow: var(--shadow-sm); }
-.seg-btn { border: 0; background: #fff; color: var(--text-2); font-size: 13px; font-weight: 600; padding: 8px 15px; cursor: pointer; border-left: 1px solid var(--line); transition: background .14s, color .14s; }
+.seg-btn { border: 0; background: #fff; color: var(--text-2); font-size: 13px; font-weight: 600; padding: 9px 15px; cursor: pointer; border-left: 1px solid var(--line); transition: background .14s, color .14s; }
 .seg-btn:first-child { border-left: 0; }
 .seg-btn:hover { background: var(--bg-2); }
 .seg-btn.active { background: var(--silver); color: #fff; }
@@ -292,11 +294,16 @@ table tr.row-click { cursor: pointer; }
 .ag-corner { background: #F2F5FB; font-size: 10.5px; font-weight: 800; color: var(--text-3); display: flex; align-items: center; justify-content: center; position: sticky; top: 0; left: 0; z-index: 6; }
 .ag-day { background: #EAF0FA; text-align: center; font-size: 12.5px; font-weight: 800; color: var(--text); height: 32px; display: flex; align-items: center; justify-content: center; text-transform: capitalize; position: sticky; top: 0; z-index: 5; }
 .ag-box { background: #F7F9FD; text-align: center; font-size: 10px; font-weight: 700; color: var(--text-3); height: 24px; display: flex; align-items: center; justify-content: center; text-transform: uppercase; letter-spacing: .4px; position: sticky; top: 32px; z-index: 5; }
-.ag-hour { background: #fff; padding: 5px 7px 0; text-align: right; font-size: 10.5px; color: var(--text-3); font-variant-numeric: tabular-nums; position: sticky; left: 0; z-index: 4; }
-.ag-cell { background: #fff; min-height: 34px; padding: 2px; display: flex; flex-direction: column; gap: 2px; }
+.ag-hour { background: #fff; padding: 6px 7px 0; text-align: right; font-size: 10.5px; color: var(--text-3); font-variant-numeric: tabular-nums; position: sticky; left: 0; z-index: 4; }
+.ag-cell { background: #fff; min-height: 58px; padding: 3px; display: flex; flex-direction: column; gap: 3px; }
 .ag-daystart { box-shadow: inset 2px 0 0 var(--line-2); }
 .ag-weeklabel { font-size: 13px; font-weight: 800; color: var(--text-2); padding: 4px 2px 8px; text-transform: capitalize; }
+/* Citas más altas y con la información completa (paciente · tratamiento · profesional). */
+.ag-cell .appt { min-height: 52px; padding: 5px 8px; font-size: 11.5px; }
+.ag-cell .appt strong { white-space: normal; font-size: 11.5px; line-height: 1.25; padding-right: 18px; overflow: visible; text-overflow: clip; }
+.ag-cell .appt .meta { white-space: normal; font-size: 10.5px; line-height: 1.2; margin-top: 2px; overflow: visible; text-overflow: clip; }
 @media (max-width: 1024px){ .ag-wrap { max-height: none; } }
+@media (max-width: 820px){ .ag-controls { gap: 12px; } }
 
 /* ===== MODAL / TOAST ===== */
 .modal-bg { position: fixed; inset: 0; background: rgba(40,45,70,.35); backdrop-filter: blur(4px);
@@ -1688,7 +1695,7 @@ function buildAgendaGrid(days, appts, range) {
   });
   days.forEach((_, di) => { for (let b = 0; b < AG_NBOX; b++) Object.values(cells[di][b]).forEach((l) => l.sort((x, y) => Date.parse(x.starts_at) - Date.parse(y.starts_at))); });
   const totalCols = days.length * AG_NBOX;
-  let html = `<div class="ag-grid" style="grid-template-columns:56px repeat(${totalCols}, minmax(86px, 1fr))">`;
+  let html = `<div class="ag-grid" style="grid-template-columns:56px repeat(${totalCols}, minmax(116px, 1fr))">`;
   html += `<div class="ag-corner" style="grid-row:1 / span 2; grid-column:1">Hora</div>`;
   days.forEach((d) => { html += `<div class="ag-day" style="grid-column:span ${AG_NBOX}">${WEEKDAY_LABEL[(d.getDay() + 6) % 7]} ${d.getDate()}</div>`; });
   days.forEach(() => { for (let b = 1; b <= AG_NBOX; b++) html += `<div class="ag-box${b === 1 ? " ag-daystart" : ""}">Box ${b}</div>`; });
@@ -1914,24 +1921,30 @@ async function renderAgenda() {
         <button class="btn primary" id="newApptBtn">+ Nueva cita</button>
       </div>
     </div>
-    <div class="agenda-controls">
-      <select class="select" id="proFilter" style="max-width:220px">
-        <option value="">Todos los profesionales</option>
-        ${cache.professionals.map(p => `<option value="${p.id}" ${agendaState.professionalId===p.id?"selected":""}>${escapeHtml(p.name)}</option>`).join("")}
-      </select>
-      <div class="ag-viewbar">
-        <span class="ag-viewlabel">Vista de agenda</span>
-        <select class="select" id="agView" style="max-width:150px">
+    <div class="agenda-controls ag-controls">
+      <div class="ag-ctrl">
+        <span class="ag-ctrl-lbl">Vista de profesional</span>
+        <select class="select" id="proFilter" style="min-width:210px">
+          <option value="">Todos los profesionales</option>
+          ${cache.professionals.map(p => `<option value="${p.id}" ${agendaState.professionalId===p.id?"selected":""}>${escapeHtml(p.name)}</option>`).join("")}
+        </select>
+      </div>
+      <div class="ag-ctrl">
+        <span class="ag-ctrl-lbl">Vista de agenda</span>
+        <select class="select" id="agView" style="min-width:150px">
           <option value="semanal" ${view==="semanal"?"selected":""}>Semanal</option>
           <option value="diario" ${view==="diario"?"selected":""}>Diario</option>
           <option value="mensual" ${view==="mensual"?"selected":""}>Mensual</option>
         </select>
+      </div>
+      <div class="ag-ctrl">
+        <span class="ag-ctrl-lbl">Franja horaria</span>
         <div class="seg-toggle">
           ${rangeBtn("manana","Mañana")}${rangeBtn("tarde","Tarde")}${rangeBtn("completo","Completo")}
         </div>
       </div>
-      ${googleSyncButton}
-      ${googleDisconnectButton}
+      ${googleSyncButton ? `<div class="ag-ctrl"><span class="ag-ctrl-lbl">&nbsp;</span>${googleSyncButton}</div>` : ""}
+      ${googleDisconnectButton ? `<div class="ag-ctrl"><span class="ag-ctrl-lbl">&nbsp;</span>${googleDisconnectButton}</div>` : ""}
     </div>
     <div id="cancelBox"></div>
     <div id="agendaContainer"><div class="empty-state">Cargando agenda…</div></div>
