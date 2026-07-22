@@ -99,6 +99,37 @@ function addTextExamples(component, exampleValues, key) {
   }
 }
 
+// Construye el array de `components` para Meta a partir de los textos (encabezado, cuerpo,
+// pie) y sus valores de ejemplo. Lo comparten crear y editar plantilla. Lanza Error con
+// mensaje claro si algo no es válido (el llamador lo convierte en 400).
+function buildTemplateComponents(input = {}) {
+  const headerText = String(input.header_text || "").trim();
+  const bodyText = String(input.body_text || "").trim();
+  const footerText = String(input.footer_text || "").trim();
+  const bodyExamples = parseExampleValues(input.body_examples);
+  const headerExamples = parseExampleValues(input.header_examples);
+
+  if (!bodyText) throw new Error("Falta el texto principal de la plantilla.");
+  if (bodyText.length > 1024) throw new Error("El texto principal supera 1024 caracteres.");
+  if (headerText.length > 60) throw new Error("El encabezado supera 60 caracteres.");
+  if (footerText.length > 60) throw new Error("El pie supera 60 caracteres.");
+  if (hasNamedTemplateVars(headerText) || hasNamedTemplateVars(bodyText) || hasNamedTemplateVars(footerText)) {
+    throw new Error("Meta solo acepta variables numeradas como {{1}}, {{2}}. No uses {{nombre}} en plantillas de Meta.");
+  }
+
+  const components = [];
+  if (headerText) {
+    const header = { type: "HEADER", format: "TEXT", text: headerText };
+    addTextExamples(header, headerExamples.length ? headerExamples : bodyExamples, "header_text");
+    components.push(header);
+  }
+  const body = { type: "BODY", text: bodyText };
+  addTextExamples(body, bodyExamples, "body_text");
+  components.push(body);
+  if (footerText) components.push({ type: "FOOTER", text: footerText });
+  return components;
+}
+
 function googleConfig() {
   return {
     clientId: process.env.GOOGLE_CLIENT_ID || "",
@@ -1003,11 +1034,22 @@ app.get("/api/cancellations", requireAuth, async (_req, res) => {
 app.patch("/api/cancellations/:id", requireAuth, async (req, res) => {
   try {
     const status = req.body?.status === "handled" ? "handled" : "pending";
+    // Recuperamos la solicitud para saber a qué cita apunta.
+    const { data: reqRow } = await supabase
+      .from("df_cancellation_requests").select("id, appointment_id").eq("id", req.params.id).maybeSingle();
     const { error } = await supabase.from("df_cancellation_requests")
       .update({ status, handled_at: status === "handled" ? new Date().toISOString() : null })
       .eq("id", req.params.id);
     if (error) throw error;
-    return res.json({ ok: true });
+    // Al marcar la solicitud como GESTIONADA, la cita asociada se cancela y
+    // desaparece de la agenda (se conserva el registro con estado "cancelled").
+    let appointmentCancelled = false;
+    if (status === "handled" && reqRow?.appointment_id) {
+      const { error: aErr } = await supabase.from("df_appointments")
+        .update({ status: "cancelled" }).eq("id", reqRow.appointment_id);
+      if (!aErr) appointmentCancelled = true;
+    }
+    return res.json({ ok: true, appointmentCancelled });
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
@@ -2536,14 +2578,23 @@ app.get("/api/marketing/templates", requireAuth, async (_req, res) => {
     const token = process.env.WHATSAPP_TOKEN || "";
     if (!wabaId || !token) return res.json({ templates: [], configured: false });
 
-    const url = `${META_GRAPH_BASE}/${wabaId}/message_templates?limit=200&fields=name,status,category,language,components`;
+    const url = `${META_GRAPH_BASE}/${wabaId}/message_templates?limit=200&fields=id,name,status,category,language,components`;
     const metaRes = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
     const metaData = await metaRes.json().catch(() => ({}));
     if (!metaRes.ok) {
       const detail = metaData?.error?.error_user_msg || metaData?.error?.message || `Meta Graph ${metaRes.status}`;
       return res.status(502).json({ error: detail, templates: [], configured: true });
     }
-    return res.json({ templates: metaData.data || [], configured: true });
+    const templates = metaData.data || [];
+    // Meta no expone la fecha de creación de las plantillas: la guardamos nosotros en
+    // df_settings (clave tpl_created:<nombre>) al crearlas desde el CRM y la fusionamos aquí.
+    try {
+      const { data: metaRows } = await supabase.from("df_settings").select("key, value").like("key", "tpl_created:%");
+      const createdMap = {};
+      (metaRows || []).forEach((r) => { createdMap[String(r.key).slice("tpl_created:".length)] = r.value?.at || null; });
+      templates.forEach((t) => { t.created_at = createdMap[t.name] || null; });
+    } catch (_e) { /* si falla, simplemente no habrá fecha */ }
+    return res.json({ templates, configured: true });
   } catch (err) {
     return res.status(500).json({ error: err.message, templates: [] });
   }
@@ -2563,39 +2614,16 @@ app.post("/api/marketing/templates", requireAuth, async (req, res) => {
     const name = normalizeMetaTemplateName(req.body?.name);
     const category = String(req.body?.category || "MARKETING").trim().toUpperCase();
     const language = String(req.body?.language || "es_ES").trim();
-    const headerText = String(req.body?.header_text || "").trim();
-    const bodyText = String(req.body?.body_text || "").trim();
-    const footerText = String(req.body?.footer_text || "").trim();
-    const bodyExamples = parseExampleValues(req.body?.body_examples);
-    const headerExamples = parseExampleValues(req.body?.header_examples);
 
     if (!name) return res.status(400).json({ error: "Falta el nombre de la plantilla." });
     if (!["MARKETING", "UTILITY", "AUTHENTICATION"].includes(category)) {
       return res.status(400).json({ error: "Categoría de plantilla no válida." });
     }
     if (!language) return res.status(400).json({ error: "Falta el idioma de la plantilla." });
-    if (!bodyText) return res.status(400).json({ error: "Falta el texto principal de la plantilla." });
-    if (bodyText.length > 1024) return res.status(400).json({ error: "El texto principal supera 1024 caracteres." });
-    if (headerText.length > 60) return res.status(400).json({ error: "El encabezado supera 60 caracteres." });
-    if (footerText.length > 60) return res.status(400).json({ error: "El pie supera 60 caracteres." });
-    if (hasNamedTemplateVars(headerText) || hasNamedTemplateVars(bodyText) || hasNamedTemplateVars(footerText)) {
-      return res.status(400).json({
-        error: "Meta solo acepta variables numeradas como {{1}}, {{2}}. No uses {{nombre}} en plantillas de Meta.",
-      });
-    }
 
-    const components = [];
-    if (headerText) {
-      const header = { type: "HEADER", format: "TEXT", text: headerText };
-      addTextExamples(header, headerExamples.length ? headerExamples : bodyExamples, "header_text");
-      components.push(header);
-    }
-
-    const body = { type: "BODY", text: bodyText };
-    addTextExamples(body, bodyExamples, "body_text");
-    components.push(body);
-
-    if (footerText) components.push({ type: "FOOTER", text: footerText });
+    let components;
+    try { components = buildTemplateComponents(req.body); }
+    catch (e) { return res.status(400).json({ error: e.message }); }
 
     const payload = {
       name,
@@ -2619,12 +2647,54 @@ app.post("/api/marketing/templates", requireAuth, async (req, res) => {
       return res.status(502).json({ error: detail, meta: metaData });
     }
 
+    // Guardamos la fecha de creación (Meta no la expone) para mostrarla en "Plantillas disponibles".
+    try {
+      await supabase.from("df_settings").upsert(
+        { key: "tpl_created:" + name, value: { at: new Date().toISOString() }, updated_at: new Date().toISOString() },
+        { onConflict: "key" }
+      );
+    } catch (_e) { /* no bloquea la creación */ }
+
     return res.json({
       template: metaData,
       submitted: { name, category, language },
     });
   } catch (err) {
     console.error("[marketing/template]", err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// Editar una plantilla existente en Meta. Al guardar, Meta la vuelve a poner en revisión
+// (PENDING) hasta que la apruebe. El nombre y el idioma NO se pueden cambiar al editar.
+app.post("/api/marketing/templates/:id/edit", requireAuth, async (req, res) => {
+  try {
+    const token = process.env.WHATSAPP_TOKEN || "";
+    if (!token) return res.status(500).json({ error: "Falta WHATSAPP_TOKEN en las variables de entorno." });
+    const templateId = String(req.params.id || "").trim();
+    if (!templateId) return res.status(400).json({ error: "Falta el identificador de la plantilla." });
+
+    let components;
+    try { components = buildTemplateComponents(req.body); }
+    catch (e) { return res.status(400).json({ error: e.message }); }
+
+    const payload = { components };
+    const category = String(req.body?.category || "").trim().toUpperCase();
+    if (["MARKETING", "UTILITY", "AUTHENTICATION"].includes(category)) payload.category = category;
+
+    const metaRes = await fetch(`${META_GRAPH_BASE}/${templateId}`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const metaData = await metaRes.json().catch(() => ({}));
+    if (!metaRes.ok) {
+      const detail = metaData?.error?.error_user_msg || metaData?.error?.message || `Meta Graph ${metaRes.status}`;
+      return res.status(502).json({ error: detail, meta: metaData });
+    }
+    return res.json({ ok: true, meta: metaData });
+  } catch (err) {
+    console.error("[marketing/template/edit]", err);
     return res.status(500).json({ error: err.message });
   }
 });
