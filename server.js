@@ -2749,15 +2749,73 @@ app.get("/api/whatsapp/webhook", (req, res) => {
   return res.sendStatus(403);
 });
 
-// Recepción de mensajes entrantes.
+// --- Consentimiento de marketing por WhatsApp (plantilla de aviso con botones) --------------
+// URL pública del PDF con toda la información (se sirve desde /public).
+const MARKETING_CONSENT_PDF_URL = `${PUBLIC_URL}/consentimiento-marketing.pdf`;
+// Etiquetas/payloads que cuentan como "Aceptar" y como "Leer más".
+const CONSENT_ACCEPT_LABELS = ["aceptar", "acepto", "si acepto", "si, acepto", "aceptar comunicaciones"];
+const CONSENT_READMORE_LABELS = ["leer mas", "leer más", "mas informacion", "más información", "ver documento", "leer"];
+function normLabel(s) {
+  return String(s || "").trim().toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/\s+/g, " ");
+}
+function buttonMatches(button, labels, tokens) {
+  if (!button) return false;
+  const t = normLabel(button.text);
+  const p = normLabel(button.payload);
+  if (labels.some((l) => normLabel(l) === t || normLabel(l) === p)) return true;
+  if (tokens && tokens.some((tok) => p.includes(tok) || t.includes(tok))) return true;
+  return false;
+}
+const isMarketingConsentAccept = (b) => buttonMatches(b, CONSENT_ACCEPT_LABELS, ["consent", "acepto_marketing", "marketing_ok", "marketing_accept"]);
+const isReadMoreButton = (b) => buttonMatches(b, CONSENT_READMORE_LABELS, ["leer_mas", "read_more", "readmore"]);
+
+// Marca marketing_consent=true del paciente cuyo teléfono coincide (por los últimos 9 dígitos).
+async function markMarketingConsentByPhone(phone) {
+  const wa = normalizeWaPhone(phone);
+  if (!wa) return { ok: false, reason: "phone" };
+  const last9 = wa.slice(-9);
+  const { data: patients } = await supabase.from("df_patients").select("id, full_name, phone, marketing_consent");
+  const match = (patients || []).find((p) => {
+    const pw = normalizeWaPhone(p.phone);
+    return pw && pw.slice(-9) === last9;
+  });
+  if (!match) return { ok: false, reason: "not_found" };
+  if (!match.marketing_consent) {
+    await supabase.from("df_patients").update({ marketing_consent: true, updated_at: new Date().toISOString() }).eq("id", match.id);
+  }
+  return { ok: true, patient: match };
+}
+
 app.post("/api/whatsapp/webhook", async (req, res) => {
   const wa = require("./lib/whatsapp");
   if (!wa.verifySignature(req.rawBody, req.get("x-hub-signature-256"))) {
     return res.sendStatus(403);
   }
   try {
-    const { handleMessage } = require("./lib/bot");
+    const { handleMessage, getOrCreateConversation, saveMessage } = require("./lib/bot");
     for (const m of wa.parseIncoming(req.body)) {
+      // 1) Botón "Aceptar" de la plantilla de consentimiento -> marca el consentimiento en el CRM.
+      if (m.button && isMarketingConsentAccept(m.button)) {
+        const r = await markMarketingConsentByPhone(m.from).catch(() => ({ ok: false }));
+        const nombre = (r.patient && String(r.patient.full_name || "").trim().split(/\s+/)[0]) || "";
+        await wa.sendText(m.from,
+          `¡Gracias${nombre ? ", " + nombre : ""}! Hemos registrado tu consentimiento para recibir comunicaciones de Dental Fortes. Puedes darte de baja cuando quieras escribiéndonos "BAJA".`
+        ).catch(() => {});
+        // Deja constancia visible en Conversaciones.
+        try {
+          const conv = await getOrCreateConversation({ channel: "whatsapp", phone: m.from, name: m.name });
+          await saveMessage(conv.id, "user", "✅ Aceptó recibir comunicaciones de marketing");
+        } catch (_e) {}
+        continue;
+      }
+      // 2) Botón "Leer más" -> envía el PDF con toda la información.
+      if (m.button && isReadMoreButton(m.button)) {
+        await wa.sendDocument(m.from, MARKETING_CONSENT_PDF_URL, "Consentimiento-Dental-Fortes.pdf",
+          'Aquí tienes toda la información sobre el tratamiento de tus datos. Si estás de acuerdo, pulsa "Aceptar".'
+        ).catch((e) => console.error("[wa doc]", e.message));
+        continue;
+      }
+      // 3) Resto de mensajes: flujo normal del asistente.
       if (!m.text) {
         await wa.sendText(m.from, "De momento solo puedo leer mensajes de texto. ¿Me lo escribe, por favor?").catch(() => {});
         continue;
