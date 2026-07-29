@@ -9,8 +9,8 @@ const crypto = require("crypto");
 const express = require("express");
 
 const { supabase } = require("./lib/db");
-const { issueToken, checkPassword, requireAuth } = require("./lib/auth");
-const { assignCabinet, CAPACITY_REASONS, localWeekdayAndTime, withinBookingWindow } = require("./lib/scheduling");
+const { issueToken, checkPassword, checkUserPassword, requireAuth, requireReception } = require("./lib/auth");
+const { assignCabinet, CAPACITY_REASONS, localWeekdayAndTime, withinBookingWindow, isClinicClosed } = require("./lib/scheduling");
 
 // Día de la semana (0=lunes..6=domingo) y hora "HH:MM" en zona horaria de Madrid a partir
 // de una fecha/ISO (que puede venir en UTC). Se usa para validar el horario de reserva.
@@ -128,6 +128,27 @@ function buildTemplateComponents(input = {}) {
   components.push(body);
   if (footerText) components.push({ type: "FOOTER", text: footerText });
   return components;
+}
+
+// Mapeo de variables de una plantilla: qué representa cada {{n}} del cuerpo.
+// Se guarda en df_settings (clave tpl_vars:<nombre>) porque Meta no lo almacena.
+// map = [ { type: 'name'|'treatment'|'fixed', value: '<texto fijo>' }, ... ]  (índice 0 = {{1}})
+function normalizeVarMap(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw.map((v) => {
+    const type = ["name", "treatment", "fixed"].includes(v && v.type) ? v.type : "fixed";
+    return { type, value: type === "fixed" ? String((v && v.value) || "") : "" };
+  });
+}
+async function saveTemplateVarMap(name, rawMap) {
+  const map = normalizeVarMap(rawMap);
+  if (!name) return;
+  try {
+    await supabase.from("df_settings").upsert(
+      { key: "tpl_vars:" + name, value: { map }, updated_at: new Date().toISOString() },
+      { onConflict: "key" }
+    );
+  } catch (_e) { /* no bloquea */ }
 }
 
 function googleConfig() {
@@ -450,12 +471,28 @@ app.get("/healthz", (_req, res) => res.json({ ok: true }));
 // AUTH
 // =============================================================
 app.post("/api/auth/login", async (req, res) => {
+  const username = String(req.body?.username || "").trim().toLowerCase();
   const password = String(req.body?.password || "");
   if (!password) return res.status(400).json({ error: "Falta contraseña." });
-  const ok = await checkPassword(password);
-  if (!ok) return res.status(401).json({ error: "Contraseña incorrecta." });
-  const token = issueToken({ role: "admin" });
-  return res.json({ token });
+
+  let role = null;
+  // 1) Usuario guardado en Supabase (df_users): recepción o trabajador.
+  if (username) {
+    try {
+      const { data: user } = await supabase
+        .from("df_users").select("username, password_hash, role").eq("username", username).maybeSingle();
+      if (user && (await checkUserPassword(password, user.password_hash))) role = user.role;
+    } catch (_e) { /* si la tabla aún no existe, seguimos con el fallback */ }
+  }
+  // 2) Compatibilidad: "recepcion" (o sin usuario) con la CONTRASEÑA ACTUAL del CRM
+  //    (ADMIN_PASSWORD_HASH del entorno). Así recepción entra sin depender de Supabase.
+  if (!role && (username === "recepcion" || username === "") && (await checkPassword(password))) {
+    role = "reception";
+  }
+
+  if (!role) return res.status(401).json({ error: "Usuario o contraseña incorrectos." });
+  const token = issueToken({ role, username: username || "recepcion" });
+  return res.json({ token, role });
 });
 
 app.get("/api/auth/me", requireAuth, (req, res) => res.json({ session: req.session }));
@@ -517,7 +554,7 @@ app.get("/api/dashboard/stats", requireAuth, async (_req, res) => {
 });
 
 // Facturación del dashboard (con filtros: tratamiento, profesional, edad, periodo).
-app.get("/api/dashboard/billing", requireAuth, async (req, res) => {
+app.get("/api/dashboard/billing", requireAuth, requireReception, async (req, res) => {
   try {
     const { from, to, treatment_id, professional_id, age_min, age_max } = req.query;
     const ageMin = age_min ? Number(age_min) : null;
@@ -680,7 +717,7 @@ app.get("/api/dashboard/billing", requireAuth, async (req, res) => {
 // =============================================================
 // NOTIFICACIONES — eventos recientes del CRM (para el panel de la campana)
 // =============================================================
-app.get("/api/notifications", requireAuth, async (_req, res) => {
+app.get("/api/notifications", requireAuth, async (req, res) => {
   try {
     const LIM = 20;
     const [appts, reviews, msgs] = await Promise.all([
@@ -725,7 +762,11 @@ app.get("/api/notifications", requireAuth, async (_req, res) => {
     }
 
     events.sort((x, y) => Date.parse(y.at) - Date.parse(x.at));
-    return res.json({ notifications: events.slice(0, 40) });
+    // El perfil "trabajador" no ve la columna de Mensajes (ni reseñas de clientes).
+    const filtered = req.session?.role === "worker"
+      ? events.filter((e) => e.type !== "mensaje" && e.type !== "resena")
+      : events;
+    return res.json({ notifications: filtered.slice(0, 40) });
   } catch (err) {
     console.error("[notifications]", err);
     return res.status(500).json({ error: err.message });
@@ -782,6 +823,14 @@ app.post("/api/appointments", requireAuth, async (req, res) => {
       const wt = madridWeekdayAndTime(body.starts_at);
       if (wt && !withinBookingWindow(wt.weekday, wt.hhmm)) {
         return res.status(409).json({ error: "Fuera de horario de reserva: la última cita es a las 19:00 (lunes a jueves) y 13:45 (viernes), y no se agenda sábados ni domingos. Marca 'Forzar' si quieres agendarla igualmente.", reason: "fuera_horario" });
+      }
+    }
+
+    // Vacaciones de la clínica: no se agenda en fechas de cierre general (el personal puede forzar).
+    if (!body.force) {
+      const madridDay = new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Madrid", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(body.starts_at));
+      if (await isClinicClosed(supabase, madridDay)) {
+        return res.status(409).json({ error: "La clínica está cerrada (vacaciones) esa fecha. Marca 'Forzar' si quieres agendarla igualmente.", reason: "clinica_cerrada" });
       }
     }
 
@@ -970,7 +1019,7 @@ app.post("/api/appointments/:id/pay", requireAuth, async (req, res) => {
 });
 
 // Facturación de un día: cobros PAGADOS ese día (paciente, tratamiento, importe) + total.
-app.get("/api/billing", requireAuth, async (req, res) => {
+app.get("/api/billing", requireAuth, requireReception, async (req, res) => {
   try {
     const dateStr = String(req.query.date || "").slice(0, 10) || new Date().toISOString().slice(0, 10);
     const dayStart = new Date(dateStr + "T00:00:00.000Z").getTime();
@@ -1056,7 +1105,7 @@ app.patch("/api/cancellations/:id", requireAuth, async (req, res) => {
 });
 
 // Establece la caja inicial de un día (df_settings). La caja final se recalcula sola.
-app.put("/api/billing/caja-inicial", requireAuth, async (req, res) => {
+app.put("/api/billing/caja-inicial", requireAuth, requireReception, async (req, res) => {
   try {
     const dateStr = String(req.body?.date || "").slice(0, 10);
     const amount = Number(req.body?.amount);
@@ -1073,7 +1122,7 @@ app.put("/api/billing/caja-inicial", requireAuth, async (req, res) => {
 
 // Pagos pendientes: cobros PARCIALES (queda por cobrar total_eur - amount_eur).
 // Se muestran en un apartado al final del dashboard.
-app.get("/api/payments/pending", requireAuth, async (_req, res) => {
+app.get("/api/payments/pending", requireAuth, requireReception, async (_req, res) => {
   try {
     const { data: pays, error } = await supabase
       .from("df_patient_payments")
@@ -1422,7 +1471,7 @@ app.get("/api/cron/reminders", async (req, res) => {
 });
 
 // Lista de próximas citas + estado de recordatorios (para el apartado Recordatorios).
-app.get("/api/reminders", requireAuth, async (_req, res) => {
+app.get("/api/reminders", requireAuth, requireReception, async (_req, res) => {
   try {
     const cfg = await getReminderConfig();
     const { data, error } = await supabase
@@ -1441,10 +1490,10 @@ app.get("/api/reminders", requireAuth, async (_req, res) => {
 });
 
 // Config de la cadencia (offsets en horas).
-app.get("/api/reminders/config", requireAuth, async (_req, res) => {
+app.get("/api/reminders/config", requireAuth, requireReception, async (_req, res) => {
   return res.json(await getReminderConfig());
 });
-app.put("/api/reminders/config", requireAuth, async (req, res) => {
+app.put("/api/reminders/config", requireAuth, requireReception, async (req, res) => {
   try {
     let offsets = (req.body && req.body.offsets) || [];
     offsets = offsets.map(Number).filter((n) => Number.isFinite(n) && n > 0);
@@ -1758,7 +1807,7 @@ app.delete("/api/treatments/:id/patients/:patientId", requireAuth, async (req, r
 // =============================================================
 // PRESUPUESTOS (primera visita) — aceptado / pendiente de aceptación
 // =============================================================
-app.get("/api/budgets", requireAuth, async (_req, res) => {
+app.get("/api/budgets", requireAuth, requireReception, async (_req, res) => {
   try {
     // Pacientes con al menos una PRIMERA VISITA (ahí se ofrece el presupuesto).
     const { data: firstVisits } = await supabase
@@ -1789,7 +1838,7 @@ app.get("/api/budgets", requireAuth, async (_req, res) => {
   }
 });
 
-app.put("/api/budgets/:patientId", requireAuth, async (req, res) => {
+app.put("/api/budgets/:patientId", requireAuth, requireReception, async (req, res) => {
   try {
     const status = String(req.body?.status || "").trim();
     if (!["pendiente", "aceptado"].includes(status)) return res.status(400).json({ error: "Estado no válido." });
@@ -1876,7 +1925,7 @@ app.get("/api/professionals", requireAuth, async (_req, res) => {
   }
 });
 
-app.post("/api/professionals", requireAuth, async (req, res) => {
+app.post("/api/professionals", requireAuth, requireReception, async (req, res) => {
   try {
     const { name, specialty, color, schedules, is_generalist } = req.body || {};
     if (!name || !specialty) return res.status(400).json({ error: "Faltan datos." });
@@ -1900,7 +1949,7 @@ app.post("/api/professionals", requireAuth, async (req, res) => {
   }
 });
 
-app.patch("/api/professionals/:id", requireAuth, async (req, res) => {
+app.patch("/api/professionals/:id", requireAuth, requireReception, async (req, res) => {
   try {
     const allowed = ["name","specialty","color","active","notes","is_generalist"];
     const patch = {};
@@ -1923,6 +1972,67 @@ app.patch("/api/professionals/:id", requireAuth, async (req, res) => {
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
+});
+
+// Añade un DÍA suelto de bloqueo (el profesional no viene ese día). Reutiliza
+// df_professional_time_off con start_date = end_date. El bot lo respeta.
+app.post("/api/professionals/:id/timeoff", requireAuth, requireReception, async (req, res) => {
+  try {
+    const day = String(req.body?.date || "").slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return res.status(400).json({ error: "Fecha no válida." });
+    // Evita duplicar el mismo día.
+    const { data: exists } = await supabase.from("df_professional_time_off")
+      .select("id").eq("professional_id", req.params.id).eq("start_date", day).eq("end_date", day).limit(1).maybeSingle();
+    if (exists) return res.json({ ok: true, id: exists.id, duplicated: true });
+    const { data, error } = await supabase.from("df_professional_time_off")
+      .insert({ professional_id: req.params.id, start_date: day, end_date: day, note: req.body?.note || null })
+      .select().single();
+    if (error) throw error;
+    return res.json({ ok: true, timeoff: data });
+  } catch (err) { return res.status(500).json({ error: err.message }); }
+});
+
+app.delete("/api/professionals/:id/timeoff/:offId", requireAuth, requireReception, async (req, res) => {
+  try {
+    const { error } = await supabase.from("df_professional_time_off")
+      .delete().eq("id", req.params.offId).eq("professional_id", req.params.id);
+    if (error) throw error;
+    return res.json({ ok: true });
+  } catch (err) { return res.status(500).json({ error: err.message }); }
+});
+
+// =============================================================
+// VACACIONES / CIERRES DE LA CLÍNICA (periodos sin actividad)
+// =============================================================
+app.get("/api/clinic-closures", requireAuth, async (_req, res) => {
+  try {
+    const { data, error } = await supabase.from("df_clinic_closures")
+      .select("*").order("start_date", { ascending: true });
+    if (error) throw error;
+    return res.json({ closures: data || [] });
+  } catch (err) { return res.status(500).json({ error: err.message }); }
+});
+
+app.post("/api/clinic-closures", requireAuth, requireReception, async (req, res) => {
+  try {
+    const start = String(req.body?.start_date || "").slice(0, 10);
+    let end = String(req.body?.end_date || "").slice(0, 10) || start;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(start)) return res.status(400).json({ error: "Fecha de inicio no válida." });
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(end)) end = start;
+    if (end < start) end = start;
+    const { data, error } = await supabase.from("df_clinic_closures")
+      .insert({ start_date: start, end_date: end, note: req.body?.note || null }).select().single();
+    if (error) throw error;
+    return res.json({ closure: data });
+  } catch (err) { return res.status(500).json({ error: err.message }); }
+});
+
+app.delete("/api/clinic-closures/:id", requireAuth, requireReception, async (req, res) => {
+  try {
+    const { error } = await supabase.from("df_clinic_closures").delete().eq("id", req.params.id);
+    if (error) throw error;
+    return res.json({ ok: true });
+  } catch (err) { return res.status(500).json({ error: err.message }); }
 });
 
 // =============================================================
@@ -2006,7 +2116,7 @@ app.delete("/api/treatments/:id", requireAuth, async (req, res) => {
 // =============================================================
 // CONVERSACIONES (placeholder para el bot que se integra después)
 // =============================================================
-app.get("/api/conversations", requireAuth, async (_req, res) => {
+app.get("/api/conversations", requireAuth, requireReception, async (_req, res) => {
   try {
     const { data, error } = await supabase
       .from("df_conversations")
@@ -2020,7 +2130,7 @@ app.get("/api/conversations", requireAuth, async (_req, res) => {
   }
 });
 
-app.get("/api/conversations/:id", requireAuth, async (req, res) => {
+app.get("/api/conversations/:id", requireAuth, requireReception, async (req, res) => {
   try {
     const { data: conv } = await supabase
       .from("df_conversations").select("*").eq("id", req.params.id).maybeSingle();
@@ -2033,7 +2143,7 @@ app.get("/api/conversations/:id", requireAuth, async (req, res) => {
   }
 });
 
-app.post("/api/conversations/:id/reply", requireAuth, async (req, res) => {
+app.post("/api/conversations/:id/reply", requireAuth, requireReception, async (req, res) => {
   try {
     const content = String(req.body?.content || "").trim();
     if (!content) return res.status(400).json({ error: "Mensaje vacío." });
@@ -2070,7 +2180,7 @@ app.post("/api/conversations/:id/reply", requireAuth, async (req, res) => {
   }
 });
 
-app.post("/api/conversations/:id/toggle-bot", requireAuth, async (req, res) => {
+app.post("/api/conversations/:id/toggle-bot", requireAuth, requireReception, async (req, res) => {
   try {
     const enabled = !!req.body?.enabled;
     const { error } = await supabase.from("df_conversations")
@@ -2082,7 +2192,7 @@ app.post("/api/conversations/:id/toggle-bot", requireAuth, async (req, res) => {
   }
 });
 
-app.post("/api/conversations/:id/close", requireAuth, async (req, res) => {
+app.post("/api/conversations/:id/close", requireAuth, requireReception, async (req, res) => {
   try {
     const { error } = await supabase.from("df_conversations")
       .update({ status: "closed" }).eq("id", req.params.id);
@@ -2094,7 +2204,7 @@ app.post("/api/conversations/:id/close", requireAuth, async (req, res) => {
 });
 
 // Eliminar conversación (los mensajes se borran en cascada por la FK).
-app.delete("/api/conversations/:id", requireAuth, async (req, res) => {
+app.delete("/api/conversations/:id", requireAuth, requireReception, async (req, res) => {
   try {
     const { error } = await supabase.from("df_conversations").delete().eq("id", req.params.id);
     if (error) throw error;
@@ -2107,7 +2217,7 @@ app.delete("/api/conversations/:id", requireAuth, async (req, res) => {
 // =============================================================
 // RESEÑAS (flujo 4.5/5: <=4 → interno, >4 → Google)
 // =============================================================
-app.get("/api/reviews", requireAuth, async (_req, res) => {
+app.get("/api/reviews", requireAuth, requireReception, async (_req, res) => {
   try {
     const { data, error } = await supabase
       .from("df_reviews")
@@ -2121,7 +2231,7 @@ app.get("/api/reviews", requireAuth, async (_req, res) => {
   }
 });
 
-app.post("/api/reviews", requireAuth, async (req, res) => {
+app.post("/api/reviews", requireAuth, requireReception, async (req, res) => {
   try {
     const { patient_id, appointment_id, rating, comment } = req.body || {};
     if (rating == null) return res.status(400).json({ error: "Falta rating." });
@@ -2142,7 +2252,7 @@ app.post("/api/reviews", requireAuth, async (req, res) => {
   }
 });
 
-app.patch("/api/reviews/:id", requireAuth, async (req, res) => {
+app.patch("/api/reviews/:id", requireAuth, requireReception, async (req, res) => {
   try {
     const allowed = ["status","internal_resolution","reviewed"];
     const patch = {};
@@ -2159,7 +2269,7 @@ app.patch("/api/reviews/:id", requireAuth, async (req, res) => {
 // =============================================================
 // CAMPAÑAS DE MARKETING
 // =============================================================
-app.get("/api/campaigns", requireAuth, async (_req, res) => {
+app.get("/api/campaigns", requireAuth, requireReception, async (_req, res) => {
   try {
     const { data, error } = await supabase
       .from("df_campaigns").select("*").order("created_at", { ascending: false });
@@ -2170,7 +2280,7 @@ app.get("/api/campaigns", requireAuth, async (_req, res) => {
   }
 });
 
-app.post("/api/campaigns", requireAuth, async (req, res) => {
+app.post("/api/campaigns", requireAuth, requireReception, async (req, res) => {
   try {
     const b = req.body || {};
     const name = String(b.name || "").trim();
@@ -2216,7 +2326,7 @@ app.post("/api/campaigns", requireAuth, async (req, res) => {
   }
 });
 
-app.patch("/api/campaigns/:id", requireAuth, async (req, res) => {
+app.patch("/api/campaigns/:id", requireAuth, requireReception, async (req, res) => {
   try {
     const allowed = ["name","segment","segment_config","message_template","status","scheduled_at"];
     const patch = {};
@@ -2332,7 +2442,7 @@ function campaignSegmentInput(campaign) {
 
 // Previsualización: cuenta cuántos pacientes caen en el segmento elegido, para mostrar
 // "N pacientes seleccionados" al crear la campaña.
-app.post("/api/campaigns/preview", requireAuth, async (req, res) => {
+app.post("/api/campaigns/preview", requireAuth, requireReception, async (req, res) => {
   try {
     const b = req.body || {};
     const matched = await matchCampaignPatients({
@@ -2366,7 +2476,17 @@ async function fetchApprovedTemplate(name) {
   const body = (tpl.components || []).find((c) => c.type === "BODY");
   const varNums = [...String(body?.text || "").matchAll(/\{\{\s*(\d+)\s*\}\}/g)].map((m) => Number(m[1]));
   const bodyVarCount = varNums.length ? Math.max(...varNums) : 0;
-  return { language: tpl.language, bodyVarCount };
+  const bodyExamples = (body && body.example && body.example.body_text && body.example.body_text[0]) || [];
+  return { language: tpl.language, bodyVarCount, bodyExamples };
+}
+
+// Lee el mapeo de variables guardado para una plantilla (df_settings tpl_vars:<nombre>).
+async function getTemplateVarMap(name) {
+  if (!name) return [];
+  try {
+    const { data } = await supabase.from("df_settings").select("value").eq("key", "tpl_vars:" + name).maybeSingle();
+    return (data && data.value && data.value.map) || [];
+  } catch (_e) { return []; }
 }
 
 // Normaliza un teléfono a formato internacional para WhatsApp (solo dígitos, con prefijo
@@ -2383,7 +2503,7 @@ function normalizeWaPhone(raw) {
 // segmento. Se procesa por lotes (BATCH); al reintentar continúa con los que aún no se han
 // intentado (df_campaign_recipients). Solo se envía a pacientes con teléfono y que no hayan
 // hecho opt-out (marketing_consent = false). Requiere plantilla con 0 o 1 variable (nombre).
-app.post("/api/campaigns/:id/send", requireAuth, async (req, res) => {
+app.post("/api/campaigns/:id/send", requireAuth, requireReception, async (req, res) => {
   const BATCH = 100;
   const CONCURRENCY = 6;
   try {
@@ -2398,13 +2518,35 @@ app.post("/api/campaigns/:id/send", requireAuth, async (req, res) => {
     const templateName = campaign.message_template || (campaign.segment_config || {}).template_name;
     if (!templateName) return res.status(400).json({ error: "La campaña no tiene plantilla de Meta asignada." });
 
-    // Datos de la plantilla (idioma + nº de variables) para enviar con los parámetros justos.
+    // Datos de la plantilla (idioma + nº de variables + valores de ejemplo).
     let tplInfo;
     try { tplInfo = await fetchApprovedTemplate(templateName); }
     catch (e) { return res.status(400).json({ error: e.message }); }
-    if (tplInfo.bodyVarCount > 1) {
-      return res.status(400).json({ error: `La plantilla "${templateName}" tiene ${tplInfo.bodyVarCount} variables. El envío automático solo admite plantillas con 0 o 1 variable (el nombre del paciente).` });
-    }
+    // Mapeo de variables definido al crear la plantilla (qué es cada {{n}}).
+    const varMap = await getTemplateVarMap(templateName);
+    // Nombre del tratamiento de la campaña (para variables de tipo "tratamiento").
+    let campaignTreatment = "su tratamiento";
+    try {
+      const trIds = ((campaign.segment_config || {}).treatments) || [];
+      if (trIds.length) {
+        const { data: tr } = await supabase.from("df_treatments").select("name").eq("id", trIds[0]).maybeSingle();
+        if (tr && tr.name) campaignTreatment = tr.name;
+      }
+    } catch (_e) { /* usa el genérico */ }
+    // Construye los valores de {{1}}, {{2}}, … para un paciente, según el mapeo.
+    const buildParams = (p) => {
+      const firstName = String(p.full_name || "").trim().split(/\s+/)[0] || "paciente";
+      const out = [];
+      for (let i = 0; i < (tplInfo.bodyVarCount || 0); i++) {
+        const m = varMap[i] || {};
+        if (m.type === "name") out.push(firstName);
+        else if (m.type === "treatment") out.push(campaignTreatment);
+        else if (m.type === "fixed") out.push(m.value || tplInfo.bodyExamples[i] || "-");
+        // Sin mapeo: {{1}} = nombre por defecto; el resto, el valor de ejemplo de Meta.
+        else out.push(i === 0 ? firstName : (tplInfo.bodyExamples[i] || "-"));
+      }
+      return out;
+    };
 
     const matched = await matchCampaignPatients(campaignSegmentInput(campaign));
     if (matched == null) {
@@ -2439,8 +2581,7 @@ app.post("/api/campaigns/:id/send", requireAuth, async (req, res) => {
     for (let i = 0; i < batch.length; i += CONCURRENCY) {
       const slice = batch.slice(i, i + CONCURRENCY);
       await Promise.all(slice.map(async (pt) => {
-        const firstName = String(pt.full_name || "").trim().split(/\s+/)[0] || "";
-        const params = tplInfo.bodyVarCount === 1 ? [firstName || "paciente"] : [];
+        const params = buildParams(pt);
         try {
           await wa.sendTemplate(pt.waPhone, templateName, tplInfo.language, params);
           sent++;
@@ -2471,7 +2612,7 @@ app.post("/api/campaigns/:id/send", requireAuth, async (req, res) => {
 
 // Elimina (cancela) una campaña. Al borrarla se cancela: ya no queda programada ni se
 // enviará. Los destinatarios asociados se borran en cascada (ON DELETE CASCADE).
-app.delete("/api/campaigns/:id", requireAuth, async (req, res) => {
+app.delete("/api/campaigns/:id", requireAuth, requireReception, async (req, res) => {
   try {
     const { error } = await supabase.from("df_campaigns").delete().eq("id", req.params.id);
     if (error) throw error;
@@ -2483,7 +2624,7 @@ app.delete("/api/campaigns/:id", requireAuth, async (req, res) => {
 
 // Diagnóstico de la conexión con Meta (usa las MISMAS variables que el CRM).
 // Sirve para saber si el problema al crear plantillas está en Vercel o en Meta.
-app.get("/api/marketing/diagnose", requireAuth, async (_req, res) => {
+app.get("/api/marketing/diagnose", requireAuth, requireReception, async (_req, res) => {
   const wabaId = process.env.WHATSAPP_BUSINESS_ACCOUNT_ID || process.env.WABA_ID || "";
   const token = process.env.WHATSAPP_TOKEN || "";
   const mask = (t) => (t ? `${t.slice(0, 6)}…${t.slice(-4)} (${t.length} caracteres)` : null);
@@ -2572,7 +2713,7 @@ app.get("/api/marketing/diagnose", requireAuth, async (_req, res) => {
 });
 
 // Listar las plantillas creadas en Meta (para el desplegable de campañas).
-app.get("/api/marketing/templates", requireAuth, async (_req, res) => {
+app.get("/api/marketing/templates", requireAuth, requireReception, async (_req, res) => {
   try {
     const wabaId = process.env.WHATSAPP_BUSINESS_ACCOUNT_ID || process.env.WABA_ID || "";
     const token = process.env.WHATSAPP_TOKEN || "";
@@ -2589,11 +2730,15 @@ app.get("/api/marketing/templates", requireAuth, async (_req, res) => {
     // Meta no expone la fecha de creación de las plantillas: la guardamos nosotros en
     // df_settings (clave tpl_created:<nombre>) al crearlas desde el CRM y la fusionamos aquí.
     try {
-      const { data: metaRows } = await supabase.from("df_settings").select("key, value").like("key", "tpl_created:%");
-      const createdMap = {};
-      (metaRows || []).forEach((r) => { createdMap[String(r.key).slice("tpl_created:".length)] = r.value?.at || null; });
-      templates.forEach((t) => { t.created_at = createdMap[t.name] || null; });
-    } catch (_e) { /* si falla, simplemente no habrá fecha */ }
+      const { data: metaRows } = await supabase.from("df_settings").select("key, value").or("key.like.tpl_created:%,key.like.tpl_vars:%");
+      const createdMap = {}, varMap = {};
+      (metaRows || []).forEach((r) => {
+        const k = String(r.key);
+        if (k.startsWith("tpl_created:")) createdMap[k.slice("tpl_created:".length)] = r.value?.at || null;
+        else if (k.startsWith("tpl_vars:")) varMap[k.slice("tpl_vars:".length)] = (r.value && r.value.map) || [];
+      });
+      templates.forEach((t) => { t.created_at = createdMap[t.name] || null; t.var_map = varMap[t.name] || []; });
+    } catch (_e) { /* si falla, simplemente no habrá fecha/mapeo */ }
     return res.json({ templates, configured: true });
   } catch (err) {
     return res.status(500).json({ error: err.message, templates: [] });
@@ -2601,7 +2746,7 @@ app.get("/api/marketing/templates", requireAuth, async (_req, res) => {
 });
 
 // Crear plantillas de WhatsApp en Meta desde el apartado Marketing.
-app.post("/api/marketing/templates", requireAuth, async (req, res) => {
+app.post("/api/marketing/templates", requireAuth, requireReception, async (req, res) => {
   try {
     const wabaId = process.env.WHATSAPP_BUSINESS_ACCOUNT_ID || process.env.WABA_ID || "";
     const token = process.env.WHATSAPP_TOKEN || "";
@@ -2654,6 +2799,8 @@ app.post("/api/marketing/templates", requireAuth, async (req, res) => {
         { onConflict: "key" }
       );
     } catch (_e) { /* no bloquea la creación */ }
+    // Guardamos el MAPEO de variables (qué es cada {{n}}: nombre / tratamiento / texto fijo).
+    await saveTemplateVarMap(name, req.body?.var_map);
 
     return res.json({
       template: metaData,
@@ -2667,7 +2814,7 @@ app.post("/api/marketing/templates", requireAuth, async (req, res) => {
 
 // Editar una plantilla existente en Meta. Al guardar, Meta la vuelve a poner en revisión
 // (PENDING) hasta que la apruebe. El nombre y el idioma NO se pueden cambiar al editar.
-app.post("/api/marketing/templates/:id/edit", requireAuth, async (req, res) => {
+app.post("/api/marketing/templates/:id/edit", requireAuth, requireReception, async (req, res) => {
   try {
     const token = process.env.WHATSAPP_TOKEN || "";
     if (!token) return res.status(500).json({ error: "Falta WHATSAPP_TOKEN en las variables de entorno." });
@@ -2692,6 +2839,8 @@ app.post("/api/marketing/templates/:id/edit", requireAuth, async (req, res) => {
       const detail = metaData?.error?.error_user_msg || metaData?.error?.message || `Meta Graph ${metaRes.status}`;
       return res.status(502).json({ error: detail, meta: metaData });
     }
+    // Actualiza el mapeo de variables (el frontend envía el nombre de la plantilla).
+    if (req.body?.name) await saveTemplateVarMap(normalizeMetaTemplateName(req.body.name), req.body?.var_map);
     return res.json({ ok: true, meta: metaData });
   } catch (err) {
     console.error("[marketing/template/edit]", err);
