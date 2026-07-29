@@ -16,9 +16,9 @@ create table if not exists public.df_users (
 );
 alter table public.df_users enable row level security;
 
--- Usuario TRABAJADOR — contraseña: DentalFortes2025
+-- Usuario TRABAJADOR — contraseña: DentalFortes@
 insert into public.df_users (username, password_hash, role)
-values ('trabajador', crypt('DentalFortes2025', gen_salt('bf')), 'worker')
+values ('trabajador', crypt('DentalFortes@', gen_salt('bf')), 'worker')
 on conflict (username) do update
   set password_hash = excluded.password_hash, role = excluded.role;
 
