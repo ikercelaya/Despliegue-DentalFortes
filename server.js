@@ -2174,7 +2174,53 @@ app.post("/api/conversations/:id/reply", requireAuth, requireReception, async (r
     const { error } = await supabase.from("df_messages")
       .insert({ conversation_id: req.params.id, role: "admin", content });
     if (error) throw error;
+    await supabase.from("df_conversations").update({ updated_at: new Date().toISOString() }).eq("id", req.params.id);
     return res.json({ ok: true });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// Envía una IMAGEN o ARCHIVO al paciente desde el CRM (botón "+" de la conversación).
+// El archivo llega en base64 (límite JSON 8mb -> ~5 MB reales), se guarda en Storage
+// y se entrega por WhatsApp con su URL pública.
+app.post("/api/conversations/:id/media", requireAuth, requireReception, async (req, res) => {
+  try {
+    const { filename, mime, data_base64, caption } = req.body || {};
+    const buffer = Buffer.from(String(data_base64 || ""), "base64");
+    if (!buffer.length) return res.status(400).json({ error: "Archivo vacío o no válido." });
+    if (buffer.length > 5 * 1024 * 1024) return res.status(400).json({ error: "El archivo supera el máximo de 5 MB." });
+
+    const { data: conv } = await supabase.from("df_conversations")
+      .select("id, channel, customer_phone").eq("id", req.params.id).maybeSingle();
+    if (!conv) return res.status(404).json({ error: "Conversación no encontrada." });
+    if (conv.channel !== "whatsapp" || !conv.customer_phone) {
+      return res.status(400).json({ error: "El envío de archivos solo está disponible en conversaciones de WhatsApp." });
+    }
+    const wa = require("./lib/whatsapp");
+    if (!wa.isConfigured()) {
+      return res.status(503).json({ error: "WhatsApp no está configurado en el servidor (falta token o phone number id)." });
+    }
+    const to = normalizeWaPhone(conv.customer_phone);
+    if (!to) return res.status(400).json({ error: "El teléfono de la conversación no es válido." });
+
+    const url = await uploadChatMedia(conv.id, buffer, mime, filename);
+    const isImage = String(mime || "").startsWith("image/");
+    try {
+      if (isImage) await wa.sendImage(to, url, caption || undefined);
+      else await wa.sendDocument(to, url, filename || "archivo", caption || undefined);
+    } catch (e) {
+      // Lo más habitual: fuera de la ventana de 24 h de WhatsApp, o token caducado.
+      return res.status(502).json({ error: "No se pudo entregar por WhatsApp: " + e.message });
+    }
+
+    const label = isImage ? "📷 Imagen" : `📎 ${filename || "Archivo"}`;
+    const content = caption ? `${label} · ${caption}` : label;
+    const { error } = await supabase.from("df_messages")
+      .insert({ conversation_id: conv.id, role: "admin", content, image_url: url });
+    if (error) throw error;
+    await supabase.from("df_conversations").update({ updated_at: new Date().toISOString() }).eq("id", conv.id);
+    return res.json({ ok: true, url });
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
@@ -2487,6 +2533,38 @@ async function getTemplateVarMap(name) {
     const { data } = await supabase.from("df_settings").select("value").eq("key", "tpl_vars:" + name).maybeSingle();
     return (data && data.value && data.value.map) || [];
   } catch (_e) { return []; }
+}
+
+// =============================================================
+// ADJUNTOS DEL CHAT (fotos/archivos) — Supabase Storage
+// =============================================================
+// Bucket público donde se guardan las fotos y archivos intercambiados por chat
+// (fotos de la boca del paciente, documentos que envía recepción...). Se crea
+// solo la primera vez que hace falta; no requiere migración manual.
+const CHAT_MEDIA_BUCKET = "df-chat-media";
+const MEDIA_EXT_BY_MIME = {
+  "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp", "image/gif": "gif",
+  "application/pdf": "pdf",
+};
+function chatMediaExt(mime, filename) {
+  if (MEDIA_EXT_BY_MIME[mime]) return MEDIA_EXT_BY_MIME[mime];
+  const fromName = String(filename || "").match(/\.([a-z0-9]{1,8})$/i);
+  if (fromName) return fromName[1].toLowerCase();
+  if (String(mime || "").startsWith("image/")) return String(mime).split("/")[1].replace(/[^a-z0-9]/gi, "") || "img";
+  return "bin";
+}
+async function uploadChatMedia(conversationId, buffer, mime, filename) {
+  const path = `${conversationId}/${Date.now()}-${crypto.randomBytes(4).toString("hex")}.${chatMediaExt(mime, filename)}`;
+  const contentType = mime || "application/octet-stream";
+  let { error } = await supabase.storage.from(CHAT_MEDIA_BUCKET).upload(path, buffer, { contentType });
+  if (error) {
+    // Primer uso: el bucket aún no existe -> se crea público y se reintenta.
+    await supabase.storage.createBucket(CHAT_MEDIA_BUCKET, { public: true }).catch(() => {});
+    ({ error } = await supabase.storage.from(CHAT_MEDIA_BUCKET).upload(path, buffer, { contentType }));
+  }
+  if (error) throw new Error("No se pudo guardar el adjunto: " + error.message);
+  const { data } = supabase.storage.from(CHAT_MEDIA_BUCKET).getPublicUrl(path);
+  return data.publicUrl;
 }
 
 // Normaliza un teléfono a formato internacional para WhatsApp (solo dígitos, con prefijo
@@ -2964,9 +3042,31 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
         ).catch((e) => console.error("[wa doc]", e.message));
         continue;
       }
-      // 3) Resto de mensajes: flujo normal del asistente.
+      // 3) Foto o documento del paciente: se descarga de Meta, se guarda en Supabase
+      //    Storage y queda visible en la conversación del CRM. El bot acusa recibo
+      //    (no puede "ver" la imagen; el profesional la revisa desde el panel).
+      if (m.media) {
+        try {
+          const conv = await getOrCreateConversation({ channel: "whatsapp", phone: m.from, name: m.name });
+          const { buffer, mime } = await wa.fetchMedia(m.media.id);
+          const url = await uploadChatMedia(conv.id, buffer, mime, m.media.filename);
+          const label = m.media.kind === "image"
+            ? "📷 Foto enviada por el paciente"
+            : `📎 Archivo del paciente: ${m.media.filename || "documento"}`;
+          const text = m.media.caption ? `${label} · "${m.media.caption}"` : label;
+          const result = await handleMessage({ channel: "whatsapp", phone: m.from, name: m.name, text, imageUrl: url });
+          if (result.reply) {
+            await wa.sendText(m.from, withWaPrefix(WA_BOT_PREFIX, result.reply)).catch((e) => console.error("[wa send]", e.message));
+          }
+        } catch (err) {
+          console.error("[wa media]", err.message);
+          await wa.sendText(m.from, "He recibido su archivo, pero ha habido un problema al guardarlo. ¿Puede volver a enviarlo, por favor?").catch(() => {});
+        }
+        continue;
+      }
+      // 4) Resto de mensajes: flujo normal del asistente.
       if (!m.text) {
-        await wa.sendText(m.from, "De momento solo puedo leer mensajes de texto. ¿Me lo escribe, por favor?").catch(() => {});
+        await wa.sendText(m.from, "De momento solo puedo leer mensajes de texto, fotos y documentos. ¿Me lo escribe, por favor?").catch(() => {});
         continue;
       }
       const result = await handleMessage({ channel: "whatsapp", phone: m.from, name: m.name, text: m.text });
