@@ -132,11 +132,13 @@ function buildTemplateComponents(input = {}) {
 
 // Mapeo de variables de una plantilla: qué representa cada {{n}} del cuerpo.
 // Se guarda en df_settings (clave tpl_vars:<nombre>) porque Meta no lo almacena.
-// map = [ { type: 'name'|'treatment'|'fixed', value: '<texto fijo>' }, ... ]  (índice 0 = {{1}})
+// map = [ { type: 'name'|'phone'|'address'|'treatment'|'fixed', value: '<texto fijo>' }, ... ]
+// (índice 0 = {{1}}). name/phone/address se rellenan con los datos de cada paciente.
+const TEMPLATE_VAR_TYPES = ["name", "phone", "address", "treatment", "fixed"];
 function normalizeVarMap(raw) {
   if (!Array.isArray(raw)) return [];
   return raw.map((v) => {
-    const type = ["name", "treatment", "fixed"].includes(v && v.type) ? v.type : "fixed";
+    const type = TEMPLATE_VAR_TYPES.includes(v && v.type) ? v.type : "fixed";
     return { type, value: type === "fixed" ? String((v && v.value) || "") : "" };
   });
 }
@@ -1575,7 +1577,7 @@ app.get("/api/patients", requireAuth, async (req, res) => {
     const { q, state, tag, treatment_id, limit } = req.query;
     let query = supabase
       .from("df_patients")
-      .select("id, full_name, phone, email, birth_date, language, patient_state, tags, marketing_consent, created_at, updated_at")
+      .select("*")
       .order("updated_at", { ascending: false })
       .limit(Math.min(500, Number(limit) || 200));
     if (state) query = query.eq("patient_state", state);
@@ -1614,6 +1616,8 @@ app.post("/api/patients", requireAuth, async (req, res) => {
         tags: Array.isArray(body.tags) ? body.tags : [],
         notes: body.notes || null,
         marketing_consent: !!body.marketing_consent,
+        sex: ["M", "F"].includes(String(body.sex || "").toUpperCase()) ? String(body.sex).toUpperCase() : null,
+        address: body.address || null,
       })
       .select()
       .single();
@@ -1650,7 +1654,7 @@ app.get("/api/patients/:id", requireAuth, async (req, res) => {
 
 app.patch("/api/patients/:id", requireAuth, async (req, res) => {
   try {
-    const allowed = ["full_name","phone","email","birth_date","language","patient_state","tags","notes","marketing_consent","dni"];
+    const allowed = ["full_name","phone","email","birth_date","language","patient_state","tags","notes","marketing_consent","dni","sex","address"];
     const patch = {};
     for (const k of allowed) if (k in (req.body || {})) patch[k] = req.body[k];
     const { data, error } = await supabase
@@ -2386,11 +2390,39 @@ app.patch("/api/campaigns/:id", requireAuth, requireReception, async (req, res) 
   }
 });
 
+// Trae TODOS los pacientes (Supabase devuelve como mucho 1000 filas por consulta, y la
+// clínica tiene más): se pagina hasta agotar. Se seleccionan todas las columnas para no
+// romper si aún no se ha ejecutado la migración que añade sex/address.
+async function fetchAllPatients() {
+  const PAGE = 1000;
+  const out = [];
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await supabase
+      .from("df_patients").select("*").order("created_at", { ascending: true }).range(from, from + PAGE - 1);
+    if (error) throw error;
+    const rows = data || [];
+    out.push(...rows);
+    if (rows.length < PAGE) break;
+  }
+  return out;
+}
+
+// Edad (en años) a partir de la fecha de nacimiento. null si no consta.
+function ageFromBirthDate(bd, now = new Date()) {
+  if (!bd) return null;
+  const d = new Date(bd);
+  if (isNaN(d.getTime())) return null;
+  let age = now.getFullYear() - d.getFullYear();
+  const m = now.getMonth() - d.getMonth();
+  if (m < 0 || (m === 0 && now.getDate() < d.getDate())) age--;
+  return age;
+}
+
 // Resuelve los pacientes que caen en un segmento de campaña (union/OR entre los segmentos
 // con criterio automático: edad, tratamiento, inactivos, presupuestos). Devuelve la lista
 // de pacientes coincidentes con sus datos. Lo usan la previsualización y el envío, para que
 // el "N seleccionados" y a quién se envía sean SIEMPRE lo mismo.
-async function matchCampaignPatients({ segments = [], treatments = [], ageRanges = [], manualPatientIds = [] }) {
+async function matchCampaignPatients({ segments = [], treatments = [], ageRanges = [], manualPatientIds = [], savedSegments = null }) {
   const wantEdad = segments.includes("por_edad");
   const wantTrat = segments.includes("por_tratamiento");
   const wantInact = segments.includes("inactivos");
@@ -2398,25 +2430,31 @@ async function matchCampaignPatients({ segments = [], treatments = [], ageRanges
   const manualIds = (manualPatientIds || []).map((x) => String(x)).filter(Boolean);
   const manualSet = new Set(manualIds);
   const hasManual = manualSet.size > 0;
+
+  // Segmentos GUARDADOS con filtros propios (df_segments): vienen como "seg:<id>".
+  // Dentro de cada segmento los filtros se combinan con Y; entre segmentos, con O.
+  const savedIds = segments.filter((s) => String(s).startsWith("seg:")).map((s) => String(s).slice(4));
+  let saved = [];
+  if (savedIds.length) {
+    if (Array.isArray(savedSegments)) saved = savedSegments.filter((s) => savedIds.includes(String(s.id)));
+    else {
+      const { data } = await supabase.from("df_segments").select("id, name, filters").in("id", savedIds);
+      saved = data || [];
+    }
+  }
+
   // Si no hay ningún criterio (ni segmento automático ni pacientes elegidos a mano), no se
   // puede contar/enviar automáticamente.
-  if (!(wantEdad || wantTrat || wantInact || wantPresu || hasManual)) return null;
+  if (!(wantEdad || wantTrat || wantInact || wantPresu || hasManual || saved.length)) return null;
 
-  const { data: patients } = await supabase
-    .from("df_patients").select("id, full_name, birth_date, phone, marketing_consent");
+  const patients = await fetchAllPatients();
   const now = new Date();
-  const ageOf = (bd) => {
-    if (!bd) return null;
-    const d = new Date(bd); if (isNaN(d.getTime())) return null;
-    let age = now.getFullYear() - d.getFullYear();
-    const m = now.getMonth() - d.getMonth();
-    if (m < 0 || (m === 0 && now.getDate() < d.getDate())) age--;
-    return age;
-  };
+  const ageOf = (bd) => ageFromBirthDate(bd, now);
   const apptsByPatient = {};
-  if (wantTrat || wantInact) {
+  // Los segmentos guardados también necesitan las citas (filtro por tratamiento/profesional).
+  if (wantTrat || wantInact || saved.length) {
     const { data: appts } = await supabase
-      .from("df_appointments").select("patient_id, treatment_id, starts_at").neq("status", "cancelled");
+      .from("df_appointments").select("patient_id, treatment_id, professional_id, starts_at").neq("status", "cancelled");
     for (const a of appts || []) {
       if (!a.patient_id) continue;
       (apptsByPatient[a.patient_id] = apptsByPatient[a.patient_id] || []).push(a);
@@ -2425,7 +2463,7 @@ async function matchCampaignPatients({ segments = [], treatments = [], ageRanges
   // Etiquetas de tratamiento asignadas a mano (df_patient_treatments): así los pacientes
   // importados sin historial de citas también entran en el segmento "por tratamiento".
   const taggedTreatByPatient = {};
-  if (wantTrat) {
+  if (wantTrat || saved.length) {
     const { data: tags } = await supabase.from("df_patient_treatments").select("patient_id, treatment_id");
     for (const t of tags || []) {
       if (!t.patient_id) continue;
@@ -2465,6 +2503,31 @@ async function matchCampaignPatients({ segments = [], treatments = [], ageRanges
       if (!last || last < inactCutoff) match = true;
     }
     if (!match && wantPresu && pendingByPatient[pt.id]) match = true;
+    // Segmentos GUARDADOS: el paciente entra si cumple TODOS los filtros de alguno.
+    if (!match && saved.length) {
+      for (const sg of saved) {
+        const f = (sg && sg.filters) || {};
+        const trIds = (f.treatment_ids || []).map(String);
+        const prIds = (f.professional_ids || []).map(String);
+        const appts = apptsByPatient[pt.id] || [];
+        const tagged = taggedTreatByPatient[pt.id];
+        if (trIds.length) {
+          const porCita = appts.some((a) => a.treatment_id && trIds.includes(String(a.treatment_id)));
+          const porEtiqueta = tagged && trIds.some((tid) => tagged.has(tid));
+          if (!porCita && !porEtiqueta) continue;
+        }
+        if (prIds.length && !appts.some((a) => a.professional_id && prIds.includes(String(a.professional_id)))) continue;
+        if (f.sex && String(pt.sex || "").toUpperCase() !== String(f.sex).toUpperCase()) continue;
+        if (f.age_min != null || f.age_max != null) {
+          const age = ageOf(pt.birth_date);
+          if (age == null) continue;                                   // sin fecha de nacimiento no se puede filtrar
+          if (f.age_min != null && age < Number(f.age_min)) continue;
+          if (f.age_max != null && age > Number(f.age_max)) continue;
+        }
+        match = true;
+        break;
+      }
+    }
     // Pacientes elegidos a mano (segmento manual).
     if (!match && manualSet.has(String(pt.id))) match = true;
     if (match) matched.push(pt);
@@ -2499,7 +2562,92 @@ app.post("/api/campaigns/preview", requireAuth, requireReception, async (req, re
     });
     if (matched == null) return res.json({ count: null, withPhone: null, manualOnly: true });
     const withPhone = matched.filter((p) => p.phone).length;
-    return res.json({ count: matched.length, withPhone });
+    // Si el criterio depende de la edad, avisa de cuántos pacientes NO tienen fecha de
+    // nacimiento: sin ella no pueden entrar en el filtro (causa típica de "0 pacientes").
+    let noBirthDate = null;
+    const usesAge = (Array.isArray(b.segments) && b.segments.includes("por_edad")) ||
+      (Array.isArray(b.segments) && b.segments.some((s) => String(s).startsWith("seg:")));
+    if (usesAge) {
+      try {
+        const all = await fetchAllPatients();
+        noBirthDate = all.filter((p) => !p.birth_date).length;
+      } catch (_e) { /* informativo */ }
+    }
+    return res.json({ count: matched.length, withPhone, noBirthDate });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// =============================================================
+// SEGMENTOS GUARDADOS (con filtros) para las campañas
+// =============================================================
+function normalizeSegmentFilters(raw) {
+  const f = raw && typeof raw === "object" ? raw : {};
+  const ids = (v) => (Array.isArray(v) ? v.map((x) => String(x)).filter(Boolean) : []);
+  const num = (v) => (v === "" || v == null || Number.isNaN(Number(v)) ? null : Math.max(0, Math.min(120, Math.round(Number(v)))));
+  const sex = ["M", "F"].includes(String(f.sex || "").toUpperCase()) ? String(f.sex).toUpperCase() : null;
+  const out = { treatment_ids: ids(f.treatment_ids), professional_ids: ids(f.professional_ids), sex, age_min: num(f.age_min), age_max: num(f.age_max) };
+  if (out.age_min != null && out.age_max != null && out.age_min > out.age_max) {
+    const t = out.age_min; out.age_min = out.age_max; out.age_max = t;
+  }
+  return out;
+}
+
+app.get("/api/segments", requireAuth, requireReception, async (_req, res) => {
+  try {
+    const { data, error } = await supabase.from("df_segments").select("*").order("created_at", { ascending: true });
+    if (error) throw error;
+    return res.json({ segments: data || [] });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// Cuenta los pacientes que cumplirían unos filtros, ANTES de guardar el segmento.
+app.post("/api/segments/preview", requireAuth, requireReception, async (req, res) => {
+  try {
+    const filters = normalizeSegmentFilters(req.body?.filters);
+    const matched = await matchCampaignPatients({
+      segments: ["seg:preview"],
+      savedSegments: [{ id: "preview", filters }],
+    });
+    const list = matched || [];
+    const all = await fetchAllPatients();
+    return res.json({
+      count: list.length,
+      withPhone: list.filter((p) => p.phone).length,
+      noBirthDate: all.filter((p) => !p.birth_date).length,
+    });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/segments", requireAuth, requireReception, async (req, res) => {
+  try {
+    const name = String(req.body?.name || "").trim();
+    if (!name) return res.status(400).json({ error: "Escribe un nombre para el segmento." });
+    const filters = normalizeSegmentFilters(req.body?.filters);
+    const vacio = !filters.treatment_ids.length && !filters.professional_ids.length && !filters.sex &&
+      filters.age_min == null && filters.age_max == null;
+    if (vacio) return res.status(400).json({ error: "Elige al menos un criterio (tratamiento, profesional, sexo o edad)." });
+    const { data, error } = await supabase.from("df_segments").insert({ name, filters }).select().single();
+    if (error) {
+      if (String(error.message || "").includes("duplicate")) return res.status(400).json({ error: "Ya existe un segmento con ese nombre." });
+      throw error;
+    }
+    return res.json({ segment: data });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete("/api/segments/:id", requireAuth, requireReception, async (req, res) => {
+  try {
+    const { error } = await supabase.from("df_segments").delete().eq("id", req.params.id);
+    if (error) throw error;
+    return res.json({ ok: true });
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
@@ -2618,6 +2766,8 @@ app.post("/api/campaigns/:id/send", requireAuth, requireReception, async (req, r
       for (let i = 0; i < (tplInfo.bodyVarCount || 0); i++) {
         const m = varMap[i] || {};
         if (m.type === "name") out.push(firstName);
+        else if (m.type === "phone") out.push(String(p.phone || "").replace(/^\+?34/, "") || "-");
+        else if (m.type === "address") out.push(String(p.address || p.notes || "").trim() || "-");
         else if (m.type === "treatment") out.push(campaignTreatment);
         else if (m.type === "fixed") out.push(m.value || tplInfo.bodyExamples[i] || "-");
         // Sin mapeo: {{1}} = nombre por defecto; el resto, el valor de ejemplo de Meta.

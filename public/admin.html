@@ -356,6 +356,10 @@ table td, .agenda-grid .hour { font-variant-numeric: tabular-nums; }
 .seg-item.checked { border-color: var(--accent-2); background:#F4F7FD; }
 .seg-head { display:flex; align-items:center; gap:11px; padding:11px 13px; cursor:pointer; font-size:13.5px; font-weight:600; color:var(--text); user-select:none; }
 .seg-head .seg-desc { margin-left:auto; font-size:11px; font-weight:500; color:var(--text-3); }
+/* La papelera de un segmento guardado va en la misma fila, a la derecha del todo. */
+.seg-item:has(> .seg-del) { display:flex; align-items:center; }
+.seg-item > .seg-head { flex:1; min-width:0; }
+.seg-item > .seg-del { margin-right:8px; flex-shrink:0; }
 .seg-detail { padding:4px 13px 13px 40px; border-top:1px solid var(--line); display:flex; flex-direction:column; gap:10px; }
 .chk-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:6px 12px; }
 .chk-row { display:flex; align-items:center; gap:8px; font-size:13px; color:var(--text-2); cursor:pointer; padding:3px 0; }
@@ -694,6 +698,7 @@ table td, .agenda-grid .hour { font-variant-numeric: tabular-nums; }
 
 <div class="toast-stack" id="toastStack"></div>
 <div id="modalRoot"></div>
+<div id="subModalRoot"></div>
 
 <script>
 // ====================================================================
@@ -899,6 +904,18 @@ function openModal(html, opts = {}) {
   if (typeof opts.onMount === "function") opts.onMount($modalRoot.querySelector("#modalBody"));
 }
 function closeModal() { $modalRoot.innerHTML = ""; }
+
+// Modal secundario: se abre ENCIMA de otro (p. ej. crear un segmento sin perder la
+// campaña que se estaba montando).
+const $subModalRoot = document.getElementById("subModalRoot");
+function openSubModal(html, opts = {}) {
+  $subModalRoot.innerHTML = `<div class="modal-bg" style="z-index:1200"><div class="modal" id="subModalBody">${html}</div></div>`;
+  const bg = $subModalRoot.querySelector(".modal-bg");
+  bg.addEventListener("click", (e) => { if (e.target === bg) closeSubModal(); });
+  if (typeof opts.onMount === "function") opts.onMount($subModalRoot.querySelector("#subModalBody"));
+}
+function closeSubModal() { $subModalRoot.innerHTML = ""; }
+window.closeSubModal = closeSubModal;
 
 // ---------------- Auth ----------------
 async function checkSession() {
@@ -2315,6 +2332,20 @@ function openPatientModal(existing) {
         <input class="input" id="fldTags" value="${escapeHtml((p.tags||[]).join(", "))}" placeholder="problematico, impuntual..." />
       </div>
     </div>
+    <div class="row">
+      <div class="field"><label>Sexo</label>
+        <select class="select" id="fldSex">
+          <option value="" ${!p.sex?"selected":""}>Sin especificar</option>
+          <option value="M" ${p.sex==="M"?"selected":""}>Masculino</option>
+          <option value="F" ${p.sex==="F"?"selected":""}>Femenino</option>
+        </select>
+        <small style="color:var(--text-3)">Se usa para segmentar campañas.</small>
+      </div>
+      <div class="field"><label>Dirección</label>
+        <input class="input" id="fldAddress" value="${escapeHtml(p.address||"")}" placeholder="C/ Mayor 1, Sant Boi" />
+        <small style="color:var(--text-3)">Disponible como variable en las plantillas.</small>
+      </div>
+    </div>
     <div class="row single"><div class="field"><label>Notas</label><textarea class="textarea" id="fldNotes" rows="3">${escapeHtml(p.notes||"")}</textarea></div></div>
     <div class="row single"><label style="display:flex;gap:8px;align-items:center;color:var(--text-2);font-size:13px">
       <input type="checkbox" id="fldMarketing" ${p.marketing_consent?"checked":""} /> Consentimiento de marketing
@@ -2335,6 +2366,8 @@ function openPatientModal(existing) {
         tags: body.querySelector("#fldTags").value.split(",").map(s => s.trim()).filter(Boolean),
         notes: body.querySelector("#fldNotes").value.trim() || null,
         marketing_consent: body.querySelector("#fldMarketing").checked,
+        sex: body.querySelector("#fldSex").value || null,
+        address: body.querySelector("#fldAddress").value.trim() || null,
       };
       if (!payload.full_name) { toast("Falta el nombre", "error"); return; }
       try {
@@ -2379,10 +2412,11 @@ async function renderPatientDetail(id) {
           <h3>Datos</h3>
           <p style="font-size:13.5px;color:var(--text-2)">
             <strong>Fecha nacimiento:</strong> ${p.birth_date || "—"}<br>
+            <strong>Sexo:</strong> ${p.sex === "M" ? "Masculino" : p.sex === "F" ? "Femenino" : "—"}<br>
             <strong>Idioma:</strong> ${p.language==="ca"?"Català":"Español"}<br>
             <strong>Etiquetas:</strong> ${(p.tags||[]).map(t=>`<span class="tag">${escapeHtml(t)}</span>`).join("") || "—"}<br>
             <strong>Marketing:</strong> ${p.marketing_consent?"Sí":"No"}<br>
-            <strong>Dirección:</strong> ${escapeHtml(p.notes||"—")}<br>
+            <strong>Dirección:</strong> ${escapeHtml(p.address || p.notes || "—")}<br>
             <strong>DNI:</strong> ${escapeHtml(p.dni||"—")}
           </p>
         </div>
@@ -3071,6 +3105,7 @@ async function renderMarketing() {
   `;
   document.getElementById("newCampaignBtn").onclick = () => openCampaignModal();
   document.getElementById("newTemplateBtn").onclick = () => openMetaTemplateModal();
+  loadSavedSegments();   // para mostrar el nombre de los segmentos en la tabla
   loadTemplatesList();
   try {
     const { campaigns } = await api("/api/campaigns");
@@ -3222,14 +3257,34 @@ function openEditTemplateModal(key) {
       varRows.querySelectorAll(".tpl-var-val").forEach((i) => { prev[i.dataset.n] = i.value; });
       if (!maxN) { varRows.innerHTML = ""; varHint.style.display = "block"; firstSync = false; return; }
       varHint.style.display = "none";
+      const prevType = {};
+      varRows.querySelectorAll(".tpl-var-type").forEach((s) => { prevType[s.dataset.n] = s.value; });
       let html = "";
       for (let n = 1; n <= maxN; n++) {
         let v = prev[n] != null ? prev[n] : (firstSync && preset[n] != null ? preset[n] : "");
         v = String(v).replace(/"/g, "&quot;");
+        // Tipo guardado en el CRM para esta variable (si ya se definió al crearla).
+        const saved = (t.var_map || [])[n - 1] || {};
+        const ty = prevType[n] || (firstSync && saved.type ? saved.type : (n === 1 ? "name" : "fixed"));
         html += `<div class="tpl-var-row"><span class="tpl-var-tag">{{${n}}}</span>
+          <select class="select tpl-var-type" data-n="${n}" style="max-width:190px">
+            ${TPL_VAR_TYPES.map(x => `<option value="${x.key}"${x.key === ty ? " selected" : ""}>${escapeHtml(x.label)}</option>`).join("")}
+          </select>
           <input class="input tpl-var-val" data-n="${n}" value="${v}" placeholder="Valor de ejemplo para {{${n}}}"></div>`;
       }
       varRows.innerHTML = html; firstSync = false;
+      varRows.querySelectorAll(".tpl-var-type").forEach(sel => {
+        const applyType = () => {
+          const input = varRows.querySelector(`.tpl-var-val[data-n="${sel.dataset.n}"]`);
+          const def = TPL_VAR_TYPES.find(x => x.key === sel.value) || {};
+          if (!input) return;
+          input.placeholder = def.placeholder || "";
+          input.title = def.hint || "";
+          if (def.key !== "fixed" && !input.value.trim() && def.example) input.value = def.example;
+        };
+        sel.addEventListener("change", applyType);
+        applyType();
+      });
     }
     tplBody.addEventListener("input", syncVarRows);
     syncVarRows();
@@ -3250,7 +3305,15 @@ function openEditTemplateModal(key) {
       try {
         const exampleValues = [...body.querySelectorAll(".tpl-var-val")]
           .sort((a, b) => Number(a.dataset.n) - Number(b.dataset.n)).map((i) => i.value.trim());
+        const varMap = [...body.querySelectorAll(".tpl-var-type")]
+          .sort((a, b) => Number(a.dataset.n) - Number(b.dataset.n))
+          .map((s) => {
+            const val = (body.querySelector(`.tpl-var-val[data-n="${s.dataset.n}"]`) || {}).value || "";
+            return { type: s.value, value: s.value === "fixed" ? val.trim() : "" };
+          });
         await api(`/api/marketing/templates/${encodeURIComponent(t.id)}/edit`, { method: "POST", body: {
+          name: t.name,
+          var_map: varMap,
           category: body.querySelector("#etplCategory").value,
           header_text: body.querySelector("#etplHeader").value.trim(),
           body_text: tplBody.value.trim(),
@@ -3275,7 +3338,14 @@ let campaignsCache = {};
 function campaignSegLabel(c) {
   const cfg = c.segment_config || {};
   const segs = Array.isArray(cfg.segments) && cfg.segments.length ? cfg.segments : (c.segment ? [c.segment] : []);
-  return segs.map(s => s.startsWith("custom:") ? s.slice(7) : s.replaceAll("_", " ")).join(", ") || "—";
+  return segs.map(s => {
+    if (s.startsWith("custom:")) return s.slice(7);
+    if (s.startsWith("seg:")) {
+      const sg = savedSegmentsCache.find(x => String(x.id) === s.slice(4));
+      return sg ? sg.name : "segmento guardado";
+    }
+    return s.replaceAll("_", " ");
+  }).join(", ") || "—";
 }
 
 window.deleteCampaign = async function (id) {
@@ -3404,9 +3474,37 @@ const STD_SEGMENTS = [
   { key: "presupuestos_no_aceptados", label: "Presupuestos no aceptados", desc: "Pendientes" },
   { key: "manual", label: "Segmento manual", desc: "Elige pacientes concretos", detail: "manual" },
 ];
-function getCustomSegments() { try { return JSON.parse(localStorage.getItem("df_custom_segments") || "[]"); } catch { return []; } }
-function setCustomSegments(a) { localStorage.setItem("df_custom_segments", JSON.stringify(a)); }
+// Segmentos GUARDADOS con filtros (Supabase, tabla df_segments). Sustituyen a los
+// antiguos segmentos "personalizados" que solo eran un nombre sin criterio.
+let savedSegmentsCache = [];
+async function loadSavedSegments() {
+  try { const r = await api("/api/segments"); savedSegmentsCache = r.segments || []; }
+  catch (_e) { savedSegmentsCache = []; }
+  return savedSegmentsCache;
+}
+const SEX_LABEL = { M: "Masculino", F: "Femenino" };
+// Descripción legible de los filtros de un segmento ("Limpieza · Mujeres · 30–45 años").
+function segmentFiltersLabel(filters) {
+  const f = filters || {};
+  const parts = [];
+  const trNames = (f.treatment_ids || []).map(id => (cache.treatments.find(t => t.id === id) || {}).name).filter(Boolean);
+  if (trNames.length) parts.push(trNames.join(", "));
+  const prNames = (f.professional_ids || []).map(id => (cache.professionals.find(p => p.id === id) || {}).name).filter(Boolean);
+  if (prNames.length) parts.push(prNames.join(", "));
+  if (f.sex) parts.push(SEX_LABEL[f.sex] || f.sex);
+  if (f.age_min != null || f.age_max != null) {
+    if (f.age_min != null && f.age_max != null) parts.push(`${f.age_min}–${f.age_max} años`);
+    else if (f.age_min != null) parts.push(`desde ${f.age_min} años`);
+    else parts.push(`hasta ${f.age_max} años`);
+  }
+  return parts.join(" · ") || "Sin filtros";
+}
 function segItemHtml(key, label, desc, detailType) {
+  // Los segmentos guardados (seg:<id>) se pueden borrar desde aquí.
+  const delBtn = String(key).startsWith("seg:")
+    ? `<button type="button" class="icon-btn danger seg-del" data-id="${escapeHtml(String(key).slice(4))}" title="Eliminar segmento" style="padding:4px">
+         <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+       </button>` : "";
   return `
     <div class="seg-item" data-item="${escapeHtml(key)}">
       <label class="seg-head">
@@ -3414,13 +3512,125 @@ function segItemHtml(key, label, desc, detailType) {
         <span>${escapeHtml(label)}</span>
         <span class="seg-desc">${escapeHtml(desc)}</span>
       </label>
+      ${delBtn}
       ${detailType ? `<div class="seg-detail" data-detail="${detailType}" style="display:none"></div>` : ""}
     </div>`;
 }
 
-function openCampaignModal() {
+// Modal para crear un SEGMENTO con filtros: tratamiento, profesional, sexo y edad.
+// Al guardarlo entra en la lista de segmentos de las campañas (y cuenta los pacientes
+// que cumplen TODOS los criterios elegidos).
+function openSegmentModal(onCreated) {
+  const treatments = (cache.treatments || []).filter(t => t.active !== false);
+  const professionals = (cache.professionals || []).filter(p => p.active !== false);
+  openSubModal(`
+    <h3>Nuevo segmento</h3>
+    <div class="row single"><div class="field"><label>Nombre del segmento</label>
+      <input class="input" id="segName" placeholder="Ej.: Mujeres 30-45 de ortodoncia" maxlength="60" /></div></div>
+
+    <div class="row">
+      <div class="field"><label>Tratamiento</label>
+        <select class="select" id="segTreat">
+          <option value="">Todos</option>
+          ${treatments.map(t => `<option value="${escapeHtml(t.id)}">${escapeHtml(t.name)}</option>`).join("")}
+        </select>
+      </div>
+      <div class="field"><label>Profesional</label>
+        <select class="select" id="segProf">
+          <option value="">Todos</option>
+          ${professionals.map(p => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}</option>`).join("")}
+        </select>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="field"><label>Sexo</label>
+        <select class="select" id="segSex">
+          <option value="">Todos</option>
+          <option value="M">Masculino</option>
+          <option value="F">Femenino</option>
+        </select>
+      </div>
+      <div class="field"><label>Edad</label>
+        <div style="display:flex;gap:8px;align-items:center">
+          <input class="input" type="number" min="0" max="120" id="segAgeMin" placeholder="De" style="width:80px" />
+          <span class="mini-note">–</span>
+          <input class="input" type="number" min="0" max="120" id="segAgeMax" placeholder="A" style="width:80px" />
+          <span class="mini-note">años</span>
+        </div>
+      </div>
+    </div>
+
+    <small class="mini-note">Se incluirán los pacientes que cumplan <strong>todos</strong> los criterios que rellenes. Deja en "Todos" lo que no quieras filtrar.</small>
+    <div id="segPreview" class="cmp-preview" style="margin-top:10px"></div>
+
+    <div class="actions">
+      <button class="btn" onclick="closeSubModal()">Cancelar</button>
+      <button class="btn primary" id="saveSeg">Guardar segmento</button>
+    </div>
+  `, { onMount: (body) => {
+    const readFilters = () => {
+      const tr = body.querySelector("#segTreat").value;
+      const pr = body.querySelector("#segProf").value;
+      const sx = body.querySelector("#segSex").value;
+      const amin = body.querySelector("#segAgeMin").value;
+      const amax = body.querySelector("#segAgeMax").value;
+      return {
+        treatment_ids: tr ? [tr] : [],
+        professional_ids: pr ? [pr] : [],
+        sex: sx || null,
+        age_min: amin === "" ? null : Number(amin),
+        age_max: amax === "" ? null : Number(amax),
+      };
+    };
+    const isEmpty = (f) => !f.treatment_ids.length && !f.professional_ids.length && !f.sex && f.age_min == null && f.age_max == null;
+
+    // Cuenta en vivo cuántos pacientes cumplen los criterios elegidos.
+    let t;
+    const preview = async () => {
+      const box = body.querySelector("#segPreview");
+      const f = readFilters();
+      if (isEmpty(f)) { box.innerHTML = `<span class="cmp-preview-note">Elige al menos un criterio.</span>`; return; }
+      box.innerHTML = `<span class="cmp-preview-note">Calculando pacientes…</span>`;
+      try {
+        const r = await api("/api/segments/preview", { method: "POST", body: { filters: f } });
+        box.innerHTML = `<span class="cmp-preview-count">${r.count} paciente${r.count === 1 ? "" : "s"}</span>` +
+          (r.count ? ` <span class="cmp-preview-note">· ${r.withPhone} con WhatsApp</span>` : "") +
+          (r.noBirthDate && (f.age_min != null || f.age_max != null)
+            ? `<div class="cmp-preview-note" style="margin-top:4px">⚠️ ${r.noBirthDate} paciente(s) sin fecha de nacimiento: no pueden filtrarse por edad.</div>` : "");
+      } catch (e) { box.innerHTML = `<span class="cmp-preview-note" style="color:var(--danger)">${escapeHtml(e.message)}</span>`; }
+    };
+    body.querySelectorAll("select, input[type=number]").forEach(el => {
+      el.addEventListener("change", () => { clearTimeout(t); t = setTimeout(preview, 250); });
+      el.addEventListener("input", () => { clearTimeout(t); t = setTimeout(preview, 400); });
+    });
+    preview();
+
+    body.querySelector("#saveSeg").onclick = async () => {
+      const name = body.querySelector("#segName").value.trim();
+      const filters = readFilters();
+      if (!name) return toast("Escribe un nombre para el segmento", "error");
+      if (isEmpty(filters)) return toast("Elige al menos un criterio (tratamiento, profesional, sexo o edad)", "error");
+      try {
+        const r = await api("/api/segments", { method: "POST", body: { name, filters } });
+        savedSegmentsCache.push(r.segment);
+        toast("Segmento creado", "success");
+        closeSubModal();
+        if (typeof onCreated === "function") onCreated(r.segment);
+      } catch (e) { toast(e.message, "error"); }
+    };
+  } });
+}
+
+async function openCampaignModal() {
+  // Los segmentos guardados y sus filtros se cargan del servidor (df_segments).
+  await Promise.all([
+    loadSavedSegments(),
+    (async () => { if (!cache.treatments.length) { try { cache.treatments = (await api("/api/treatments")).treatments || []; } catch (_e) {} } })(),
+    (async () => { if (!cache.professionals.length) { try { cache.professionals = (await api("/api/professionals")).professionals || []; } catch (_e) {} } })(),
+  ]);
   const stdHtml = STD_SEGMENTS.map(s => segItemHtml(s.key, s.label, s.desc, s.detail)).join("");
-  const customHtml = getCustomSegments().map(n => segItemHtml("custom:" + n, n, "Personalizado", null)).join("");
+  const customHtml = savedSegmentsCache.map(s => segItemHtml("seg:" + s.id, s.name, segmentFiltersLabel(s.filters), null)).join("");
 
   openModal(`
     <h3>Nueva campaña</h3>
@@ -3431,8 +3641,7 @@ function openCampaignModal() {
       <label>Segmentos — elige uno o varios</label>
       <div class="seg-list" id="segList">${stdHtml}${customHtml}</div>
       <div class="seg-add">
-        <input class="input" id="newSegName" placeholder="Nombre de un segmento nuevo…" maxlength="40" />
-        <button type="button" class="btn" id="addSegBtn">+ Crear segmento</button>
+        <button type="button" class="btn" id="addSegBtn" style="width:100%">+ Crear segmento con filtros</button>
       </div>
       <div id="cmpPreview" class="cmp-preview"></div>
     </div></div>
@@ -3476,7 +3685,8 @@ function openCampaignModal() {
       if (!segments.length) { box.innerHTML = ""; return; }
       const treatments = [...body.querySelectorAll(".treat-chk:checked")].map(c => c.value);
       const manualIds = manualPatients.map(p => p.id);
-      const countable = segments.some(s => AUTO_SEGS.includes(s)) || manualIds.length > 0;
+      // Los segmentos guardados (seg:<id>) tienen filtros propios: también se cuentan.
+      const countable = segments.some(s => AUTO_SEGS.includes(s) || s.startsWith("seg:")) || manualIds.length > 0;
       if (!countable) {
         const onlyManual = segments.includes("manual") && segments.every(s => s === "manual");
         box.innerHTML = `<span class="cmp-preview-note">${onlyManual ? "Añade pacientes concretos abajo para el segmento manual." : "Segmento personalizado: los destinatarios se eligen a mano."}</span>`;
@@ -3490,12 +3700,33 @@ function openCampaignModal() {
           return;
         }
         const n = r.count;
+        // Si el criterio usa la edad y hay fichas sin fecha de nacimiento, se avisa:
+        // es la causa habitual de que salgan 0 pacientes.
+        const usaEdad = segments.includes("por_edad") || segments.some(s => s.startsWith("seg:"));
         box.innerHTML = `<span class="cmp-preview-count">${n} paciente${n === 1 ? "" : "s"} seleccionado${n === 1 ? "" : "s"}</span>` +
-          (r.withPhone != null && r.withPhone !== n ? ` <span class="cmp-preview-note">· ${r.withPhone} con WhatsApp</span>` : "");
+          (r.withPhone != null && r.withPhone !== n ? ` <span class="cmp-preview-note">· ${r.withPhone} con WhatsApp</span>` : "") +
+          (usaEdad && r.noBirthDate
+            ? `<div class="cmp-preview-note" style="margin-top:4px">⚠️ ${r.noBirthDate} paciente(s) sin fecha de nacimiento en su ficha: no pueden entrar en un filtro por edad.</div>` : "");
       } catch (e) { box.innerHTML = `<span class="cmp-preview-note" style="color:var(--danger)">No se pudieron contar los destinatarios.</span>`; }
     }
     // Cualquier cambio de segmento o de tratamiento recalcula el conteo.
     body.querySelector("#segList").addEventListener("change", debouncedPreview);
+    // Eliminar un segmento guardado (papelera roja).
+    body.querySelector("#segList").addEventListener("click", async (e) => {
+      const btn = e.target.closest(".seg-del");
+      if (!btn) return;
+      e.preventDefault();
+      const item = btn.closest(".seg-item");
+      const nombre = item.querySelector(".seg-head span")?.textContent || "";
+      if (!confirm(`¿Eliminar el segmento "${nombre}"? Las campañas ya enviadas no se ven afectadas.`)) return;
+      try {
+        await api(`/api/segments/${btn.dataset.id}`, { method: "DELETE" });
+        savedSegmentsCache = savedSegmentsCache.filter(s => String(s.id) !== btn.dataset.id);
+        item.remove();
+        toast("Segmento eliminado", "success");
+        debouncedPreview();
+      } catch (err) { toast(err.message, "error"); }
+    });
 
     async function buildDetail(detail) {
       detail.dataset.loaded = "1";
@@ -3580,23 +3811,19 @@ function openCampaignModal() {
       }
     }
 
-    // Crear segmento personalizado (se recuerda en el navegador para próximas campañas)
+    // Crear un segmento con FILTROS (tratamiento, profesional, sexo, edad). Se guarda en
+    // Supabase y queda disponible para todas las campañas y para todo el equipo.
     body.querySelector("#addSegBtn").onclick = () => {
-      const inp = body.querySelector("#newSegName");
-      const name = inp.value.trim();
-      if (!name) { toast("Escribe un nombre para el segmento", "error"); return; }
-      const custom = getCustomSegments();
-      const dup = custom.some(c => c.toLowerCase() === name.toLowerCase()) || STD_SEGMENTS.some(s => s.label.toLowerCase() === name.toLowerCase());
-      if (dup) { toast("Ese segmento ya existe", "error"); return; }
-      custom.push(name); setCustomSegments(custom);
-      const wrap = document.createElement("div");
-      wrap.innerHTML = segItemHtml("custom:" + name, name, "Personalizado", null);
-      const item = wrap.firstElementChild;
-      item.querySelector(".seg-chk").checked = true;
-      item.classList.add("checked");
-      wireSeg(item);
-      body.querySelector("#segList").appendChild(item);
-      inp.value = "";
+      openSegmentModal((seg) => {
+        const wrap = document.createElement("div");
+        wrap.innerHTML = segItemHtml("seg:" + seg.id, seg.name, segmentFiltersLabel(seg.filters), null);
+        const item = wrap.firstElementChild;
+        item.querySelector(".seg-chk").checked = true;
+        item.classList.add("checked");
+        wireSeg(item);
+        body.querySelector("#segList").appendChild(item);
+        debouncedPreview();
+      });
     };
 
     // Cargar plantillas creadas en Meta para el desplegable
@@ -3647,6 +3874,17 @@ function openCampaignModal() {
     };
   }});
 }
+
+// Qué representa cada variable {{n}} de una plantilla. Las de tipo dato se rellenan con
+// la ficha de cada paciente al enviar la campaña; "tratamiento" usa el de la campaña y
+// "texto fijo" envía siempre lo mismo.
+const TPL_VAR_TYPES = [
+  { key: "name",      label: "Nombre del paciente", example: "María",              placeholder: "Ejemplo para Meta (p. ej. María)",        hint: "Se enviará el nombre de cada paciente." },
+  { key: "phone",     label: "Teléfono",            example: "600123456",          placeholder: "Ejemplo para Meta (p. ej. 600123456)",    hint: "Se enviará el teléfono de la ficha del paciente." },
+  { key: "address",   label: "Dirección",           example: "C/ Mayor 1, Sant Boi", placeholder: "Ejemplo para Meta (p. ej. C/ Mayor 1)", hint: "Se enviará la dirección de la ficha del paciente." },
+  { key: "treatment", label: "Tratamiento",         example: "Limpieza dental",    placeholder: "Ejemplo para Meta (p. ej. Limpieza)",     hint: "Se enviará el tratamiento de la campaña." },
+  { key: "fixed",     label: "Texto fijo",          example: "",                   placeholder: "Texto que se enviará siempre",            hint: "Se enviará este texto tal cual." },
+];
 
 function openMetaTemplateModal() {
   openModal(`
@@ -3737,15 +3975,42 @@ function openMetaTemplateModal() {
       varRows.querySelectorAll(".tpl-var-val").forEach((i) => { prev[i.dataset.n] = i.value; });
       if (!maxN) { varRows.innerHTML = ""; varHint.style.display = "block"; return; }
       varHint.style.display = "none";
+      // Conserva también el TIPO elegido para cada variable.
+      const prevType = {};
+      varRows.querySelectorAll(".tpl-var-type").forEach((s) => { prevType[s.dataset.n] = s.value; });
       let html = "";
       for (let n = 1; n <= maxN; n++) {
         const v = prev[n] != null ? String(prev[n]).replace(/"/g, "&quot;") : "";
+        const ty = prevType[n] || (n === 1 ? "name" : "fixed");
         html += `<div class="tpl-var-row">
           <span class="tpl-var-tag">{{${n}}}</span>
+          <select class="select tpl-var-type" data-n="${n}" style="max-width:190px">
+            ${TPL_VAR_TYPES.map(t => `<option value="${t.key}"${t.key === ty ? " selected" : ""}>${escapeHtml(t.label)}</option>`).join("")}
+          </select>
           <input class="input tpl-var-val" data-n="${n}" value="${v}" placeholder="Valor de ejemplo para {{${n}}}">
         </div>`;
       }
       varRows.innerHTML = html;
+      varRows.querySelectorAll(".tpl-var-type").forEach(sel => {
+        sel.addEventListener("change", () => applyVarType(sel));
+        applyVarType(sel);
+      });
+    }
+    // El valor de la derecha es el EJEMPLO que ve Meta. Para las variables que se
+    // rellenan con datos del paciente se propone un ejemplo y se explica de dónde sale;
+    // para "Texto fijo" el valor escrito es lo que se enviará de verdad.
+    function applyVarType(sel) {
+      const n = sel.dataset.n;
+      const input = varRows.querySelector(`.tpl-var-val[data-n="${n}"]`);
+      if (!input) return;
+      const def = TPL_VAR_TYPES.find(t => t.key === sel.value) || {};
+      input.placeholder = def.placeholder || `Valor de ejemplo para {{${n}}}`;
+      if (def.key === "fixed") {
+        input.title = "Este texto es el que se enviará tal cual a todos los pacientes.";
+      } else {
+        input.title = def.hint || "";
+        if (!input.value.trim() && def.example) input.value = def.example;
+      }
     }
     tplBody.addEventListener("input", syncVarRows);
     syncVarRows();
@@ -3761,7 +4026,16 @@ function openMetaTemplateModal() {
         const exampleValues = [...body.querySelectorAll(".tpl-var-val")]
           .sort((a, b) => Number(a.dataset.n) - Number(b.dataset.n))
           .map((i) => i.value.trim());
+        // Qué representa cada variable: se guarda en el CRM y decide con qué dato se
+        // rellena {{n}} al enviar la campaña.
+        const varMap = [...body.querySelectorAll(".tpl-var-type")]
+          .sort((a, b) => Number(a.dataset.n) - Number(b.dataset.n))
+          .map((s) => {
+            const val = (body.querySelector(`.tpl-var-val[data-n="${s.dataset.n}"]`) || {}).value || "";
+            return { type: s.value, value: s.value === "fixed" ? val.trim() : "" };
+          });
         const data = await api("/api/marketing/templates", { method: "POST", body: {
+          var_map: varMap,
           name: body.querySelector("#tplName").value.trim(),
           category: body.querySelector("#tplCategory").value,
           language: body.querySelector("#tplLanguage").value,
