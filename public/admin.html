@@ -4111,6 +4111,10 @@ function openDiagnoseModal() {
         ${row("El token puede leer la WABA", c.leer_waba ? c.leer_waba.ok : null, c.leer_waba ? (c.leer_waba.ok ? ("Cuenta: " + (c.leer_waba.nombre || "") + (c.leer_waba.review ? " · Revisión: " + c.leer_waba.review : "") + (c.leer_waba.verificacion ? " · Negocio: " + c.leer_waba.verificacion : "")) : (c.leer_waba.error || "") + (c.leer_waba.code ? " (código " + c.leer_waba.code + ")" : "")) : "no comprobado")}
         ${row("El token puede listar plantillas", c.listar_plantillas ? c.listar_plantillas.ok : null, c.listar_plantillas ? (c.listar_plantillas.ok ? "Acceso de lectura correcto" : (c.listar_plantillas.error || "") + (c.listar_plantillas.code ? " (código " + c.listar_plantillas.code + ")" : "")) : "no comprobado")}
         ${row("El token puede CREAR plantillas", c.crear_plantilla ? c.crear_plantilla.ok : null, c.crear_plantilla ? (c.crear_plantilla.ok ? "Creación permitida" : (c.crear_plantilla.error || "") + (c.crear_plantilla.code ? " (código " + c.crear_plantilla.code + (c.crear_plantilla.subcode ? "/" + c.crear_plantilla.subcode : "") + ")" : "")) : "no comprobado")}
+        ${r.consent_pdf ? row('PDF de consentimiento (botón "Leer más")', r.consent_pdf.file_found && r.consent_pdf.public_url_set,
+            (r.consent_pdf.file_found ? "Archivo: " + r.consent_pdf.file : "No se encuentra el PDF en /public") +
+            " · " + r.consent_pdf.url +
+            (r.consent_pdf.public_url_set ? "" : " · falta la variable PUBLIC_URL en Vercel")) : ""}
         <div style="margin-top:12px;padding:10px 12px;border-radius:8px;background:${r.ok ? "rgba(74,222,128,0.12)" : "rgba(248,113,113,0.12)"};color:${r.ok ? "#86efac" : "#fca5a5"}">
           <strong>${r.ok ? "Conexión correcta" : "Hay un problema"}</strong><br>${escapeHtml(r.conclusion || "")}
         </div>`;

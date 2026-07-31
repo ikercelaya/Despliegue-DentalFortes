@@ -4,6 +4,7 @@ require("dotenv").config();
 // env var TZ, así que la forzamos aquí antes de cualquier cálculo de fechas.
 process.env.TZ = "Europe/Madrid";
 
+const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const express = require("express");
@@ -467,6 +468,15 @@ app.use(express.static(path.join(__dirname, "public")));
 // --------- Páginas ---------
 app.get("/", (_req, res) => res.redirect(302, "/admin"));
 app.get("/admin", (_req, res) => res.sendFile(path.join(__dirname, "public", "admin.html")));
+
+// PDF de consentimiento de marketing en una URL fija y pública (la que recibe Meta al
+// pulsar "Leer más"). Se resuelve al archivo real de /public, se llame como se llame.
+app.get("/consentimiento-marketing.pdf", (_req, res) => {
+  const file = marketingConsentPdfFile();
+  if (!file) return res.status(404).send("Documento no disponible.");
+  res.type("application/pdf");
+  return res.sendFile(file);
+});
 app.get("/healthz", (_req, res) => res.json({ ok: true }));
 
 // =============================================================
@@ -2921,6 +2931,15 @@ app.get("/api/marketing/diagnose", requireAuth, requireReception, async (_req, r
     conclusion: "",
   };
 
+  // PDF de consentimiento: es lo que se envía al pulsar "Leer más". Si Meta no puede
+  // descargarlo de esta URL, ese botón no entrega nada.
+  report.consent_pdf = {
+    url: MARKETING_CONSENT_PDF_URL,
+    file_found: !!marketingConsentPdfFile(),
+    file: marketingConsentPdfFile() ? path.basename(marketingConsentPdfFile()) : null,
+    public_url_set: !!process.env.PUBLIC_URL,
+  };
+
   if (!wabaId || !token) {
     report.conclusion = "Faltan WHATSAPP_BUSINESS_ACCOUNT_ID o WHATSAPP_TOKEN en Vercel. Añádelos y haz Redeploy.";
     return res.json(report);
@@ -3178,8 +3197,19 @@ app.get("/api/whatsapp/webhook", (req, res) => {
 });
 
 // --- Consentimiento de marketing por WhatsApp (plantilla de aviso con botones) --------------
-// URL pública del PDF con toda la información (se sirve desde /public).
-const MARKETING_CONSENT_PDF_URL = `${PUBLIC_URL}/consentimiento-marketing.pdf`;
+// PDF con toda la información. El archivo real vive en /public; se sirve además por una
+// ruta fija (más abajo) para que la URL no dependa de cómo se llame el fichero.
+const MARKETING_CONSENT_PDF_FILES = ["consentimientomarketing.pdf", "consentimiento-marketing.pdf"];
+const MARKETING_CONSENT_PDF_PATH = "/consentimiento-marketing.pdf";
+const MARKETING_CONSENT_PDF_URL = `${PUBLIC_URL}${MARKETING_CONSENT_PDF_PATH}`;
+// Localiza el PDF en /public admitiendo los dos nombres que ha tenido el archivo.
+function marketingConsentPdfFile() {
+  for (const name of MARKETING_CONSENT_PDF_FILES) {
+    const p = path.join(__dirname, "public", name);
+    if (fs.existsSync(p)) return p;
+  }
+  return null;
+}
 // Etiquetas/payloads que cuentan como "Aceptar" y como "Leer más".
 const CONSENT_ACCEPT_LABELS = ["aceptar", "acepto", "si acepto", "si, acepto", "aceptar comunicaciones"];
 const CONSENT_READMORE_LABELS = ["leer mas", "leer más", "mas informacion", "más información", "ver documento", "leer"];
@@ -3238,9 +3268,23 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
       }
       // 2) Botón "Leer más" -> envía el PDF con toda la información.
       if (m.button && isReadMoreButton(m.button)) {
-        await wa.sendDocument(m.from, MARKETING_CONSENT_PDF_URL, "Consentimiento-Dental-Fortes.pdf",
-          'Aquí tienes toda la información sobre el tratamiento de tus datos. Si estás de acuerdo, pulsa "Aceptar".'
-        ).catch((e) => console.error("[wa doc]", e.message));
+        const caption = 'Aquí tienes toda la información sobre el tratamiento de tus datos. Si estás de acuerdo, pulsa "Aceptar" en el mensaje anterior.';
+        let enviado = true;
+        try {
+          await wa.sendDocument(m.from, MARKETING_CONSENT_PDF_URL, "Consentimiento-Dental-Fortes.pdf", caption);
+        } catch (e) {
+          // Si Meta no pudo descargar el PDF, al menos se le manda el enlace: el
+          // paciente nunca se queda sin respuesta al pulsar el botón.
+          enviado = false;
+          console.error("[wa doc]", e.message, "url:", MARKETING_CONSENT_PDF_URL);
+          await wa.sendText(m.from, `${caption}\n\n${MARKETING_CONSENT_PDF_URL}`).catch((e2) => console.error("[wa doc fallback]", e2.message));
+        }
+        // Deja constancia en Conversaciones (igual que con "Aceptar").
+        try {
+          const conv = await getOrCreateConversation({ channel: "whatsapp", phone: m.from, name: m.name });
+          await saveMessage(conv.id, "user", "📄 Pidió más información sobre el consentimiento de marketing");
+          await saveMessage(conv.id, "assistant", enviado ? "📎 Enviado el PDF de consentimiento" : "🔗 Enviado el enlace al PDF de consentimiento");
+        } catch (_e) {}
         continue;
       }
       // 3) Foto o documento del paciente: se descarga de Meta, se guarda en Supabase
