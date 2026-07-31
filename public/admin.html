@@ -442,7 +442,10 @@ table td, .agenda-grid .hour { font-variant-numeric: tabular-nums; }
 /* Editor de variables de plantilla (variable | valor) */
 .tpl-var-rows { display:flex; flex-direction:column; gap:8px; }
 .tpl-var-rows:empty { display:none; }
-.tpl-var-row { display:grid; grid-template-columns:72px 1fr; gap:10px; align-items:center; }
+/* Una sola línea por variable: {{n}} · qué representa · valor de ejemplo. */
+.tpl-var-row { display:grid; grid-template-columns:64px minmax(150px,190px) 1fr; gap:10px; align-items:center; }
+.tpl-var-row .tpl-var-type { min-width:0; width:100%; }
+@media (max-width:620px){ .tpl-var-row { grid-template-columns:56px 1fr; } .tpl-var-row .tpl-var-val { grid-column:2; } }
 .tpl-var-tag { font-family:var(--font-mono,monospace); font-size:13px; font-weight:700; color:var(--accent); background:#EEF3FC; border:1px solid var(--line-2); border-radius:8px; padding:8px 0; text-align:center; }
 .chips { display:flex; flex-wrap:wrap; gap:6px; }
 .chip { display:inline-flex; align-items:center; gap:6px; padding:4px 6px 4px 11px; border-radius:999px; font-size:12px; font-weight:600; background:#EEF3FC; color:var(--accent); border:1px solid #CFE0F7; }
@@ -3597,7 +3600,11 @@ function openSegmentModal(onCreated) {
         box.innerHTML = `<span class="cmp-preview-count">${r.count} paciente${r.count === 1 ? "" : "s"}</span>` +
           (r.count ? ` <span class="cmp-preview-note">· ${r.withPhone} con WhatsApp</span>` : "") +
           (r.noBirthDate && (f.age_min != null || f.age_max != null)
-            ? `<div class="cmp-preview-note" style="margin-top:4px">⚠️ ${r.noBirthDate} paciente(s) sin fecha de nacimiento: no pueden filtrarse por edad.</div>` : "");
+            ? `<div class="cmp-preview-note" style="margin-top:4px">⚠️ ${r.noBirthDate} paciente(s) sin fecha de nacimiento: no pueden filtrarse por edad.</div>` : "") +
+          (f.sex && r.sexGuessed
+            ? `<div class="cmp-preview-note" style="margin-top:4px">ℹ️ El sexo de ${r.sexGuessed} paciente(s) se ha deducido de su nombre (su ficha no lo indica).</div>` : "") +
+          (f.sex && r.noSex
+            ? `<div class="cmp-preview-note" style="margin-top:4px">⚠️ ${r.noSex} paciente(s) con un nombre del que no se puede deducir el sexo: márcalo en su ficha para incluirlos.</div>` : "");
       } catch (e) { box.innerHTML = `<span class="cmp-preview-note" style="color:var(--danger)">${escapeHtml(e.message)}</span>`; }
     };
     body.querySelectorAll("select, input[type=number]").forEach(el => {
@@ -3661,6 +3668,9 @@ async function openCampaignModal() {
     </div>
   `, { onMount: (body) => {
     const ageRanges = [];
+    // Rango que el usuario tiene escrito ahora mismo en "De"/"A" (sin pulsar nada).
+    const liveAgeRange = { get: () => null };
+    const allAgeRanges = () => { const live = liveAgeRange.get(); return live ? [...ageRanges, live] : ageRanges.slice(); };
     const manualPatients = []; // pacientes elegidos a mano (segmento manual)
 
     function wireSeg(item) {
@@ -3694,7 +3704,7 @@ async function openCampaignModal() {
       }
       box.innerHTML = `<span class="cmp-preview-note">Calculando destinatarios…</span>`;
       try {
-        const r = await api("/api/campaigns/preview", { method: "POST", body: { segments, treatments, age_ranges: ageRanges, manual_patient_ids: manualIds } });
+        const r = await api("/api/campaigns/preview", { method: "POST", body: { segments, treatments, age_ranges: allAgeRanges(), manual_patient_ids: manualIds } });
         if (r.manualOnly || r.count == null) {
           box.innerHTML = `<span class="cmp-preview-note">Segmento manual: los destinatarios se eligen a mano.</span>`;
           return;
@@ -3747,25 +3757,40 @@ async function openCampaignModal() {
             <input class="input" type="number" min="0" max="120" id="ageFrom" placeholder="De" style="width:82px">
             <span class="mini-note">–</span>
             <input class="input" type="number" min="0" max="120" id="ageTo" placeholder="A" style="width:82px">
-            <button type="button" class="btn" id="addAge">Añadir</button>
-            <span class="mini-note">Deja "A" vacío para una edad concreta.</span>
+            <span class="mini-note">años</span>
+            <button type="button" class="btn" id="addAge" title="Añade este rango y deja los campos libres para otro">+ Otro rango</button>
           </div>
           <div class="chips" id="ageChips"></div>`;
         const chips = detail.querySelector("#ageChips");
+        const inFrom = detail.querySelector("#ageFrom");
+        const inTo = detail.querySelector("#ageTo");
         const renderChips = () => {
           chips.innerHTML = ageRanges.map((r, i) => `
             <span class="chip">${r.min}${r.max != null && r.max !== r.min ? "–" + r.max : ""} años
               <button type="button" data-i="${i}">×</button></span>`).join("");
           chips.querySelectorAll("button").forEach(b => b.onclick = () => { ageRanges.splice(+b.dataset.i, 1); renderChips(); debouncedPreview(); });
         };
+        // El rango escrito en "De"/"A" cuenta AL MOMENTO, sin tener que pulsar nada
+        // (antes se ignoraba si no se pulsaba "Añadir", y salían 0 pacientes).
+        const readLiveRange = () => {
+          let f = parseInt(inFrom.value, 10);
+          let t = parseInt(inTo.value, 10);
+          if (Number.isNaN(f) && Number.isNaN(t)) return null;
+          if (Number.isNaN(f)) f = 0;
+          if (Number.isNaN(t)) t = Number.isNaN(f) ? 120 : f;
+          f = Math.max(0, Math.min(120, f)); t = Math.max(0, Math.min(120, t));
+          return { min: Math.min(f, t), max: Math.max(f, t) };
+        };
+        liveAgeRange.get = readLiveRange;
+        inFrom.addEventListener("input", debouncedPreview);
+        inTo.addEventListener("input", debouncedPreview);
+        // "+ Otro rango": fija el rango actual como etiqueta y deja los campos libres
+        // para añadir uno más (p. ej. 0–12 y 65–99 a la vez).
         detail.querySelector("#addAge").onclick = () => {
-          let f = parseInt(detail.querySelector("#ageFrom").value, 10);
-          let t = parseInt(detail.querySelector("#ageTo").value, 10);
-          if (Number.isNaN(f)) { toast("Indica una edad", "error"); return; }
-          if (f < 0 || f > 120) { toast("Edad fuera de rango (0–120)", "error"); return; }
-          if (Number.isNaN(t)) t = f;
-          ageRanges.push({ min: Math.min(f, t), max: Math.max(f, t) });
-          detail.querySelector("#ageFrom").value = ""; detail.querySelector("#ageTo").value = "";
+          const r = readLiveRange();
+          if (!r) { toast("Indica una edad", "error"); return; }
+          ageRanges.push(r);
+          inFrom.value = ""; inTo.value = "";
           renderChips();
           debouncedPreview();
         };
@@ -3864,7 +3889,7 @@ async function openCampaignModal() {
           name,
           segments,
           treatments,
-          age_ranges: ageRanges,
+          age_ranges: allAgeRanges(),
           manual_patient_ids: manualPatients.map(p => p.id),
           template_name: body.querySelector("#cmpTemplate").value,
           scheduled_at: scheduledRaw ? new Date(scheduledRaw).toISOString() : null,

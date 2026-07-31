@@ -2407,6 +2407,53 @@ async function fetchAllPatients() {
   return out;
 }
 
+// ---- Sexo del paciente ----------------------------------------------------
+// Si la ficha no lo tiene marcado, se DEDUCE del nombre de pila (castellano y
+// catalán): primero por lista de nombres frecuentes y excepciones, y si no,
+// por la terminación. Devuelve "M", "F" o null (desconocido: no entra en el filtro).
+const NAME_SEX = (() => {
+  const F = `maria mari carmen ana anna josefa isabel dolores pilar teresa rosa francisca antonia laura cristina marta elena lucia sara paula raquel patricia beatriz rocio julia irene silvia monica nuria nuria alba andrea claudia natalia eva sonia susana montserrat montse merce merche nieves esther ester ruth judith noemi ines soledad amparo consuelo rosario milagros angeles concepcion encarnacion inmaculada remedios mercedes asuncion trinidad caridad estrella meritxell laia aina neus roser dolors montserrat gemma anna berta blanca carla carlota clara emma eulalia ariadna aitana valeria vega martina daniela lorena veronica yolanda miriam noelia estefania tamara alicia adriana amanda bibiana candela celia diana elisa fatima gloria helena ivana jessica leticia lidia lorena luisa magdalena manuela marina mireia nadia olga olivia paloma pepa petra pia rebeca regina rita sandra sofia sol tania vanesa vanessa virginia ximena zaida abril africa agata agueda aurora ainhoa aroa belen begona berenice bruna carmela catalina cecilia charo chelo cinta covadonga cruz custodia damaris debora delia desiree dulce edurne elvira emilia enriqueta ernestina esperanza estela eugenia fabiola felisa fina flora gabriela genoveva georgina gisela guadalupe guillermina herminia hortensia idoia ilse imelda india ingrid iris isaura itziar jacinta jimena joana josefina juana juliana justa lara leire leonor lourdes lucrecia luz macarena macarena magali maite malena manoli marcela margarita mariana maribel marisa marisol matilde maya melania melisa mercedes micaela milena mireya modesta monserrat nayara nerea nicola nidia nina noa nora norma nuria obdulia odette ofelia olalla oriana otilia pamela pastora paulina paz penelope perla petronila piedad pina pura purificacion ramona rafaela reyes ricarda roberta rosalia rosana rosaura rufina sagrario salome samanta saray sebastiana segunda serafina servanda severina sheila simona socorro sonsoles tatiana telma teodora tomasa ursula valentina valle vera vicenta victoria violeta visitacion viviana xenia yaiza yolanda zaira zoe zulema michelle mishelle nicole jacqueline jaqueline denise simone sophie nathalie marie rose yvonne ivonne katherine katharine madeline caroline charlotte josephine adelaide evelyn jazmin jazmine yamile yamileth dayana dayane greisy yulieth yaneth marisel maribel roxanne suzanne annette jeanette lisette yasmine yasmin carolina angelica veronica jenny jenifer jennifer kimberly wendy nancy karen betty gladys ingrid heidi astrid zulay dayra dailyn` .split(/\s+/);
+  const M = `jose juan antonio manuel francisco david javier daniel carlos miguel rafael pedro angel alejandro fernando sergio pablo jorge alberto luis alvaro adrian raul enrique ramon vicente ruben oscar andres joaquin santiago eduardo victor ignacio roberto jaime mario diego marcos ivan hector gabriel julio cesar felix agustin gonzalo guillermo lucas martin nicolas hugo mateo leo dario aitor asier iker unai ander markel julen eneko oriol marc pau pol biel arnau roger sergi jordi josep pere ferran xavier albert joan guillem nil quim ramon salvador benito bernardo bruno camilo cristian cristobal damian domingo emilio esteban eugenio evaristo fabian federico felipe fidel florencio francesc gaspar gerard german gregorio isidro ismael jacinto jacobo jeronimo jesus joel jonathan josue lorenzo lucio luciano macario marcelo mariano matias mauricio maximo modesto moises nestor norberto octavio olegario pascual patricio plinio primitivo prudencio quintin remigio ricardo rodrigo rogelio rodolfo romualdo saul sebastian segismundo severino silvestre simon teodoro tomas valentin valeriano vidal virgilio wenceslao yago zacarias abel abraham aaron adam adolfo agapito alan albino aleix alexis alfonso alfredo alonso amadeo amador amando anselmo apolinar aquilino arcadio aristides armando arsenio arturo atanasio augusto aurelio baltasar bartolome basilio bautista beltran benjamin blas bonifacio borja braulio calixto candido carmelo casimiro cayetano celestino celso cipriano ciriaco cirilo ciro claudio clemente conrado constantino cosme crescencio crispin damaso demetrio desiderio dimas dionisio donato edgar edmundo efrain eladio eleuterio eliseo eloy elias emeterio epifanio erasmo eric ernesto eusebio eutimio ezequiel faustino fausto fermin fernan filiberto fortunato fructuoso fulgencio galo genaro generoso gerardo gervasio gil godofredo goyo graciano gustavo heliodoro heraclio herminio hilario hipolito homero honorio horacio humberto ibrahim indalecio inocencio isaac isaias isidoro israel iban ivo jairo jeremias jonas juanjo justino justo lazaro leandro leocadio leon leonardo leopoldo liborio lino longinos lope lucrecio ludovico luciano macario magin manolo marcial marcial marino martiniano mauro maximiliano melchor melquiades micael miguelangel milan mohamed narciso natalio nazario nemesio nicanor nicodemo nilo noe norberto olaf onofre orestes osvaldo otto ovidio pancracio paulino pelayo perfecto policarpo ponciano porfirio procopio publio rainiero ramiro raimundo regino renato reyes ricard robustiano rogelio roman romeo roque rosendo rufino ruperto sabino salomon salustiano samuel sancho sandalio saturnino saul segundo senen serafin servando sigfrido silvano silverio sinforoso sixto sotero tadeo telesforo teodosio teofilo tiburcio timoteo tirso tito toribio trinidad ubaldo ulises urbano valeriano venancio ventura vidal vito wifredo wilfredo zenon`.split(/\s+/);
+  const map = new Map();
+  for (const n of F) map.set(n, "F");
+  for (const n of M) map.set(n, "M");   // los repetidos ganan como M (p. ej. "reyes" es ambiguo)
+  return map;
+})();
+// Femeninos acabados en -o y masculinos acabados en -a: rompen la regla general.
+const SEX_ENDING_EXCEPTIONS = new Map([
+  ["consuelo", "F"], ["rosario", "F"], ["amparo", "F"], ["socorro", "F"], ["pilar", "F"],
+  ["borja", "M"], ["luca", "M"], ["cosma", "M"], ["nikita", "M"], ["sasha", "M"], ["kuzma", "M"],
+  ["josemaria", "M"], ["jeronima", "F"],
+]);
+function normalizeName(s) {
+  return String(s || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z\s-]/g, " ").trim();
+}
+function guessSexFromName(fullName) {
+  const clean = normalizeName(fullName);
+  if (!clean) return null;
+  // El nombre de pila puede ser compuesto ("José María", "Ana Belén", "M. Carmen").
+  const parts = clean.split(/[\s-]+/).filter(Boolean);
+  if (!parts.length) return null;
+  const first = parts[0];
+  const second = parts[1];
+  // "María José", "José María": manda el primer nombre salvo el caso clásico
+  // "María + nombre masculino" (María José = mujer) que ya resuelve el diccionario.
+  for (const cand of [first, second && `${first}${second}`, second].filter(Boolean)) {
+    if (SEX_ENDING_EXCEPTIONS.has(cand)) return SEX_ENDING_EXCEPTIONS.get(cand);
+    if (NAME_SEX.has(cand)) return NAME_SEX.get(cand);
+  }
+  // Último recurso: la terminación del nombre de pila.
+  if (/(a|á)$/.test(first)) return "F";
+  if (/(o|ó|os)$/.test(first)) return "M";
+  return null;
+}
+// Sexo efectivo: lo que diga la ficha; si no consta, lo deducido del nombre.
+function patientSex(p) {
+  const explicit = String((p && p.sex) || "").toUpperCase();
+  if (explicit === "M" || explicit === "F") return explicit;
+  return guessSexFromName(p && p.full_name);
+}
+
 // Edad (en años) a partir de la fecha de nacimiento. null si no consta.
 function ageFromBirthDate(bd, now = new Date()) {
   if (!bd) return null;
@@ -2517,7 +2564,8 @@ async function matchCampaignPatients({ segments = [], treatments = [], ageRanges
           if (!porCita && !porEtiqueta) continue;
         }
         if (prIds.length && !appts.some((a) => a.professional_id && prIds.includes(String(a.professional_id)))) continue;
-        if (f.sex && String(pt.sex || "").toUpperCase() !== String(f.sex).toUpperCase()) continue;
+        // Sexo: el de la ficha si está marcado; si no, el deducido de su nombre.
+        if (f.sex && patientSex(pt) !== String(f.sex).toUpperCase()) continue;
         if (f.age_min != null || f.age_max != null) {
           const age = ageOf(pt.birth_date);
           if (age == null) continue;                                   // sin fecha de nacimiento no se puede filtrar
@@ -2618,6 +2666,9 @@ app.post("/api/segments/preview", requireAuth, requireReception, async (req, res
       count: list.length,
       withPhone: list.filter((p) => p.phone).length,
       noBirthDate: all.filter((p) => !p.birth_date).length,
+      // Cuántos del resultado tienen el sexo DEDUCIDO del nombre (no marcado en la ficha).
+      sexGuessed: filters.sex ? list.filter((p) => !p.sex).length : 0,
+      noSex: filters.sex ? all.filter((p) => !p.sex && !guessSexFromName(p.full_name)).length : 0,
     });
   } catch (err) {
     return res.status(500).json({ error: err.message });
