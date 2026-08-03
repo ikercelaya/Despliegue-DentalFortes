@@ -2596,11 +2596,32 @@ async function matchCampaignPatients({ segments = [], treatments = [], ageRanges
 }
 
 // Extrae la configuración de segmento (segments/treatments/age_ranges) de una campaña.
+// Plantillas de SERVICIO: no son publicidad, así que se envían a todos los pacientes
+// tengan o no marcado el consentimiento (el aviso del cambio de número y la propia
+// petición de consentimiento; sin esta excepción no se podrían enviar nunca).
+// Se pueden añadir más con la variable de entorno SERVICE_TEMPLATES (separadas por comas).
+const SERVICE_TEMPLATE_NAMES = new Set(
+  [process.env.CONSENT_TEMPLATE_NAME || "", "consentimiento_marketing", "mensaje_bienvenida", "nuevo_numero", "bienvenida"]
+    .filter(Boolean)
+    .concat(String(process.env.SERVICE_TEMPLATES || "").split(",").map((s) => s.trim()).filter(Boolean))
+    .map((s) => String(s).trim().toLowerCase())
+);
+function isServiceTemplate(name) {
+  const n = String(name || "").trim().toLowerCase();
+  if (!n) return false;
+  if (SERVICE_TEMPLATE_NAMES.has(n)) return true;
+  // Cualquier plantilla cuyo nombre hable de consentimiento o de bienvenida/aviso
+  // de número también cuenta como de servicio.
+  return /(consentimiento|consent|bienvenida|nuevo[_-]?numero|cambio[_-]?numero)/.test(n);
+}
+
 // Público de una campaña: por defecto SOLO pacientes que han aceptado recibir
-// comunicaciones comerciales ("consented"). "all" queda reservado a la campaña que
-// PIDE ese consentimiento (si no, nunca se podría solicitar).
+// comunicaciones comerciales ("consented"). Va a TODOS si es una plantilla de
+// servicio o si se ha marcado como campaña de consentimiento.
 function campaignAudience(campaign) {
   const cfg = (campaign && campaign.segment_config) || {};
+  const tplName = cfg.template_name || (campaign && campaign.message_template) || "";
+  if (isServiceTemplate(tplName)) return "all";
   return cfg.audience === "all" ? "all" : "consented";
 }
 
@@ -2646,7 +2667,10 @@ app.post("/api/campaigns/preview", requireAuth, requireReception, async (req, re
         noBirthDate = all.filter((p) => !p.birth_date).length;
       } catch (_e) { /* informativo */ }
     }
-    return res.json({ count: matched.length, withPhone, noBirthDate, withConsent, withoutConsent });
+    // Si la campaña usa una plantilla de servicio (consentimiento, aviso de número…)
+    // se envía a todos, tengan o no el consentimiento marcado.
+    const serviceTemplate = isServiceTemplate(b.template_name);
+    return res.json({ count: matched.length, withPhone, noBirthDate, withConsent, withoutConsent, serviceTemplate });
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
@@ -3061,7 +3085,12 @@ app.get("/api/marketing/templates", requireAuth, requireReception, async (_req, 
         if (k.startsWith("tpl_created:")) createdMap[k.slice("tpl_created:".length)] = r.value?.at || null;
         else if (k.startsWith("tpl_vars:")) varMap[k.slice("tpl_vars:".length)] = (r.value && r.value.map) || [];
       });
-      templates.forEach((t) => { t.created_at = createdMap[t.name] || null; t.var_map = varMap[t.name] || []; });
+      templates.forEach((t) => {
+        t.created_at = createdMap[t.name] || null;
+        t.var_map = varMap[t.name] || [];
+        // service = plantilla que se envía a todos (consentimiento, aviso de número…).
+        t.service = isServiceTemplate(t.name);
+      });
     } catch (_e) { /* si falla, simplemente no habrá fecha/mapeo */ }
     return res.json({ templates, configured: true });
   } catch (err) {

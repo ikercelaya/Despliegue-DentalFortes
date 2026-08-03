@@ -3422,6 +3422,7 @@ window.sendCampaign = async function (id) {
       out = `Enviados: ${r.sent}` + (r.failed ? ` · Fallidos: ${r.failed}` : "");
       if (r.remaining > 0) out += ` · Quedan ${r.remaining} (pulsa "Enviar ahora" otra vez)`;
       if (r.skippedNoPhone) out += ` · ${r.skippedNoPhone} sin teléfono`;
+      if (r.skippedNoConsent) out += ` · ${r.skippedNoConsent} sin consentimiento de marketing`;
       if (r.error_detail) out += ` · Error de WhatsApp: ${r.error_detail}`;
     }
     toast(out, r.failed && !r.sent ? "error" : "success");
@@ -3662,6 +3663,14 @@ async function openCampaignModal() {
         <input class="input" type="datetime-local" id="cmpSched" /></div>
     </div>
 
+    <div class="row single"><div class="field">
+      <label style="display:flex;gap:8px;align-items:flex-start;font-weight:600;color:var(--text-2);font-size:13px;text-transform:none;letter-spacing:0">
+        <input type="checkbox" id="cmpConsentCampaign" style="margin-top:2px" />
+        <span>Es la <strong>campaña de consentimiento</strong>: enviar también a quien todavía no ha aceptado recibir comunicaciones comerciales.</span>
+      </label>
+      <small class="mini-note">Por ley, el resto de campañas solo se envían a los pacientes que ya han aceptado (Marketing: Sí en su ficha).</small>
+    </div></div>
+
     <div class="actions">
       <button class="btn" onclick="closeModal()">Cancelar</button>
       <button class="btn primary" id="saveCmp">Guardar campaña</button>
@@ -3704,7 +3713,11 @@ async function openCampaignModal() {
       }
       box.innerHTML = `<span class="cmp-preview-note">Calculando destinatarios…</span>`;
       try {
-        const r = await api("/api/campaigns/preview", { method: "POST", body: { segments, treatments, age_ranges: allAgeRanges(), manual_patient_ids: manualIds } });
+        const tplSel = body.querySelector("#cmpTemplate");
+        const r = await api("/api/campaigns/preview", { method: "POST", body: {
+          segments, treatments, age_ranges: allAgeRanges(), manual_patient_ids: manualIds,
+          template_name: tplSel ? tplSel.value : "",
+        } });
         if (r.manualOnly || r.count == null) {
           box.innerHTML = `<span class="cmp-preview-note">Segmento manual: los destinatarios se eligen a mano.</span>`;
           return;
@@ -3713,14 +3726,27 @@ async function openCampaignModal() {
         // Si el criterio usa la edad y hay fichas sin fecha de nacimiento, se avisa:
         // es la causa habitual de que salgan 0 pacientes.
         const usaEdad = segments.includes("por_edad") || segments.some(s => s.startsWith("seg:"));
+        // A cuántos se les puede enviar de verdad: solo los que han aceptado recibir
+        // comunicaciones comerciales (salvo que sea la campaña de consentimiento).
+        const esConsentimiento = r.serviceTemplate || !!(body.querySelector("#cmpConsentCampaign") || {}).checked;
+        const destinatarios = esConsentimiento ? (r.withConsent + r.withoutConsent) : r.withConsent;
         box.innerHTML = `<span class="cmp-preview-count">${n} paciente${n === 1 ? "" : "s"} seleccionado${n === 1 ? "" : "s"}</span>` +
           (r.withPhone != null && r.withPhone !== n ? ` <span class="cmp-preview-note">· ${r.withPhone} con WhatsApp</span>` : "") +
+          (r.withConsent != null
+            ? `<div class="cmp-preview-note" style="margin-top:4px">
+                 📨 Se enviará a <strong>${destinatarios}</strong> paciente(s)` +
+               (!esConsentimiento && r.withoutConsent
+                 ? ` · ${r.withoutConsent} quedan fuera por no haber aceptado comunicaciones comerciales`
+                 : (esConsentimiento && r.withoutConsent ? ` (incluidos ${r.withoutConsent} que aún no han aceptado)` : "")) +
+               `</div>` : "") +
           (usaEdad && r.noBirthDate
             ? `<div class="cmp-preview-note" style="margin-top:4px">⚠️ ${r.noBirthDate} paciente(s) sin fecha de nacimiento en su ficha: no pueden entrar en un filtro por edad.</div>` : "");
       } catch (e) { box.innerHTML = `<span class="cmp-preview-note" style="color:var(--danger)">No se pudieron contar los destinatarios.</span>`; }
     }
     // Cualquier cambio de segmento o de tratamiento recalcula el conteo.
     body.querySelector("#segList").addEventListener("change", debouncedPreview);
+    // Marcar/desmarcar "campaña de consentimiento" cambia a cuántos se enviará.
+    body.querySelector("#cmpConsentCampaign").addEventListener("change", debouncedPreview);
     // Eliminar un segmento guardado (papelera roja).
     body.querySelector("#segList").addEventListener("click", async (e) => {
       const btn = e.target.closest(".seg-del");
@@ -3869,8 +3895,23 @@ async function openCampaignModal() {
         }
         const st = { APPROVED: "Aprobada", PENDING: "En revisión", REJECTED: "Rechazada", PAUSED: "Pausada", DISABLED: "Deshabilitada" };
         sel.innerHTML = `<option value="">— Selecciona una plantilla —</option>` +
-          templates.map(t => `<option value="${escapeHtml(t.name)}">${escapeHtml(t.name)} · ${st[t.status] || t.status || ""}${t.language ? " · " + escapeHtml(t.language) : ""}</option>`).join("");
+          templates.map(t => `<option value="${escapeHtml(t.name)}"${t.service ? ' data-service="1"' : ""}>${escapeHtml(t.name)} · ${st[t.status] || t.status || ""}${t.language ? " · " + escapeHtml(t.language) : ""}</option>`).join("");
         hint.textContent = "Solo las plantillas Aprobadas pueden enviarse por WhatsApp.";
+        // Las plantillas de SERVICIO (consentimiento, aviso de nuevo número…) van a
+        // todos los pacientes: se marca la casilla sola y se bloquea para no liarse.
+        const chk = body.querySelector("#cmpConsentCampaign");
+        const syncServicio = () => {
+          const opt = sel.selectedOptions[0];
+          const esServicio = !!(opt && opt.dataset.service);
+          if (esServicio) { chk.checked = true; chk.disabled = true; }
+          else { chk.disabled = false; }
+          hint.textContent = esServicio
+            ? "Plantilla de servicio: se enviará a todos los pacientes, hayan aceptado o no."
+            : "Solo las plantillas Aprobadas pueden enviarse por WhatsApp.";
+          debouncedPreview();
+        };
+        sel.addEventListener("change", syncServicio);
+        syncServicio();
       } catch (e) {
         sel.innerHTML = `<option value="">— error al cargar —</option>`;
         hint.textContent = e.message;
@@ -3893,6 +3934,8 @@ async function openCampaignModal() {
           manual_patient_ids: manualPatients.map(p => p.id),
           template_name: body.querySelector("#cmpTemplate").value,
           scheduled_at: scheduledRaw ? new Date(scheduledRaw).toISOString() : null,
+          // "all" solo si es la campaña que pide el consentimiento.
+          audience: body.querySelector("#cmpConsentCampaign").checked ? "all" : "consented",
         }});
         toast("Campaña creada", "success"); closeModal(); renderMarketing();
       } catch (err) { toast(err.message, "error"); }
