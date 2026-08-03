@@ -2368,6 +2368,8 @@ app.post("/api/campaigns", requireAuth, requireReception, async (req, res) => {
       manual_patient_ids: Array.isArray(b.manual_patient_ids) ? b.manual_patient_ids : (baseConfig.manual_patient_ids || []),
       custom_segments: customSegments,
       template_name: templateName,
+      // "all" solo para la campaña que pide el consentimiento; el resto, "consented".
+      audience: b.audience === "all" ? "all" : "consented",
     };
 
     const { data, error } = await supabase
@@ -2594,6 +2596,14 @@ async function matchCampaignPatients({ segments = [], treatments = [], ageRanges
 }
 
 // Extrae la configuración de segmento (segments/treatments/age_ranges) de una campaña.
+// Público de una campaña: por defecto SOLO pacientes que han aceptado recibir
+// comunicaciones comerciales ("consented"). "all" queda reservado a la campaña que
+// PIDE ese consentimiento (si no, nunca se podría solicitar).
+function campaignAudience(campaign) {
+  const cfg = (campaign && campaign.segment_config) || {};
+  return cfg.audience === "all" ? "all" : "consented";
+}
+
 function campaignSegmentInput(campaign) {
   const cfg = (campaign && campaign.segment_config) || {};
   const segments = Array.isArray(cfg.segments) && cfg.segments.length
@@ -2620,6 +2630,11 @@ app.post("/api/campaigns/preview", requireAuth, requireReception, async (req, re
     });
     if (matched == null) return res.json({ count: null, withPhone: null, manualOnly: true });
     const withPhone = matched.filter((p) => p.phone).length;
+    // Cuántos de ellos han aceptado recibir comunicaciones comerciales: son los
+    // únicos a los que se enviará (salvo la campaña de consentimiento).
+    const conTelefono = matched.filter((p) => normalizeWaPhone(p.phone));
+    const withConsent = conTelefono.filter((p) => p.marketing_consent === true).length;
+    const withoutConsent = conTelefono.length - withConsent;
     // Si el criterio depende de la edad, avisa de cuántos pacientes NO tienen fecha de
     // nacimiento: sin ella no pueden entrar en el filtro (causa típica de "0 pacientes").
     let noBirthDate = null;
@@ -2631,7 +2646,7 @@ app.post("/api/campaigns/preview", requireAuth, requireReception, async (req, re
         noBirthDate = all.filter((p) => !p.birth_date).length;
       } catch (_e) { /* informativo */ }
     }
-    return res.json({ count: matched.length, withPhone, noBirthDate });
+    return res.json({ count: matched.length, withPhone, noBirthDate, withConsent, withoutConsent });
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
@@ -2841,14 +2856,21 @@ app.post("/api/campaigns/:id/send", requireAuth, requireReception, async (req, r
     if (matched == null) {
       return res.status(400).json({ error: "El segmento es manual/personalizado: no hay destinatarios calculables automáticamente." });
     }
-    // Destinatarios: cualquiera con un teléfono utilizable (se normaliza a formato
-    // internacional). La gestión del consentimiento de marketing es responsabilidad de la
-    // clínica; para poder probar/enviar no se exige la marca (que por defecto es false).
-    const eligible = matched
+    // Destinatarios: con teléfono utilizable Y con el CONSENTIMIENTO de marketing
+    // aceptado (RGPD). Única excepción: la propia campaña que PIDE el consentimiento
+    // (audience: "all"), que por definición va a quien aún no lo ha dado.
+    const audience = campaignAudience(campaign);
+    const conTelefono = matched
       .map((p) => ({ ...p, waPhone: normalizeWaPhone(p.phone) }))
       .filter((p) => p.waPhone);
+    const eligible = audience === "all" ? conTelefono : conTelefono.filter((p) => p.marketing_consent === true);
+    const sinConsentimiento = conTelefono.length - eligible.length;
     if (eligible.length === 0) {
-      return res.status(400).json({ error: "Ningún paciente del segmento tiene un teléfono válido para enviar por WhatsApp." });
+      return res.status(400).json({
+        error: conTelefono.length === 0
+          ? "Ningún paciente del segmento tiene un teléfono válido para enviar por WhatsApp."
+          : `Ninguno de los ${conTelefono.length} paciente(s) del segmento ha aceptado recibir comunicaciones comerciales, así que no se puede enviar. Envía primero la campaña de consentimiento (marcando la casilla "campaña de consentimiento") y espera a que acepten.`,
+      });
     }
 
     // Excluye a quien ya se haya INTENTADO (enviado o fallado) en esta campaña.
@@ -2875,6 +2897,9 @@ app.post("/api/campaigns/:id/send", requireAuth, requireReception, async (req, r
           await wa.sendTemplate(pt.waPhone, templateName, tplInfo.language, params);
           sent++;
           await supabase.from("df_campaign_recipients").insert({ campaign_id: campaign.id, patient_id: pt.id, status: "sent", sent_at: new Date().toISOString() }).then(() => {}, () => {});
+          // Corta el contexto del bot en su conversación: la campaña abre una etapa
+          // nueva y no debe retomarse nada de lo hablado antes.
+          await markCampaignInConversation(pt.id, pt.waPhone, campaign.name);
         } catch (e) {
           failed++; lastError = e.message;
           await supabase.from("df_campaign_recipients").insert({ campaign_id: campaign.id, patient_id: pt.id, status: "failed" }).then(() => {}, () => {});
@@ -2890,7 +2915,8 @@ app.post("/api/campaigns/:id/send", requireAuth, requireReception, async (req, r
     return res.json({
       sent, failed, remaining,
       totalEligible: eligible.length,
-      skippedNoPhone: matched.length - eligible.length,
+      skippedNoPhone: matched.length - conTelefono.length,
+      skippedNoConsent: sinConsentimiento,
       error_detail: failed && !sent ? lastError : undefined,
       done: remaining === 0,
     });
@@ -3227,8 +3253,30 @@ function buttonMatches(button, labels, tokens) {
 const isMarketingConsentAccept = (b) => buttonMatches(b, CONSENT_ACCEPT_LABELS, ["consent", "acepto_marketing", "marketing_ok", "marketing_accept"]);
 const isReadMoreButton = (b) => buttonMatches(b, CONSENT_READMORE_LABELS, ["leer_mas", "read_more", "readmore"]);
 
+// Botón/respuesta de RECHAZO del consentimiento ("No acepto"): el paciente no quiere
+// comunicaciones comerciales. Se marca en su ficha para no volver a escribirle.
+const CONSENT_REJECT_LABELS = ["no acepto", "no, gracias", "no gracias", "no autorizo", "rechazar", "no quiero recibir", "no deseo recibir", "no me interesa", "no"];
+const isMarketingConsentReject = (b) => buttonMatches(b, CONSENT_REJECT_LABELS, ["no_acepto", "reject", "decline", "marketing_no", "no_consent"]);
+// Por TEXTO solo cuentan las frases explícitas (un "no" suelto puede ser respuesta
+// a cualquier otra cosa de la conversación).
+function isConsentRejectText(text) {
+  const t = normLabel(text).replace(/[.!¡¿?,;:]/g, "").trim();
+  return ["no acepto", "no autorizo", "no quiero recibir", "no deseo recibir", "no gracias", "no me interesa"].includes(t);
+}
+
+// BAJA: palabra clave con la que el paciente revoca el consentimiento (se lo
+// prometemos en el mensaje de confirmación, así que tiene que funcionar siempre).
+const OPT_OUT_WORDS = ["baja", "darme de baja", "quiero darme de baja", "dar de baja", "no quiero recibir", "no quiero mas mensajes", "stop", "unsubscribe", "cancelar suscripcion"];
+function isOptOutMessage(text) {
+  const t = normLabel(text).replace(/[.!¡¿?,;:]/g, "").trim();
+  if (!t) return false;
+  if (OPT_OUT_WORDS.includes(t)) return true;
+  // "BAJA" suelta (mayúsculas o minúsculas) aunque venga con alguna palabra más.
+  return /^(quiero |deseo |solicito )?(darme de |dar de )?baja$/.test(t);
+}
+
 // Marca marketing_consent=true del paciente cuyo teléfono coincide (por los últimos 9 dígitos).
-async function markMarketingConsentByPhone(phone) {
+async function setMarketingConsentByPhone(phone, value) {
   const wa = normalizeWaPhone(phone);
   if (!wa) return { ok: false, reason: "phone" };
   const last9 = wa.slice(-9);
@@ -3238,10 +3286,93 @@ async function markMarketingConsentByPhone(phone) {
     return pw && pw.slice(-9) === last9;
   });
   if (!match) return { ok: false, reason: "not_found" };
-  if (!match.marketing_consent) {
-    await supabase.from("df_patients").update({ marketing_consent: true, updated_at: new Date().toISOString() }).eq("id", match.id);
+  if (match.marketing_consent !== value) {
+    await supabase.from("df_patients").update({ marketing_consent: value, updated_at: new Date().toISOString() }).eq("id", match.id);
   }
   return { ok: true, patient: match };
+}
+const markMarketingConsentByPhone = (phone) => setMarketingConsentByPhone(phone, true);
+const revokeMarketingConsentByPhone = (phone) => setMarketingConsentByPhone(phone, false);
+
+// ---- Plantilla de consentimiento para pacientes nuevos ---------------------
+// Cuando el bot termina de dar de alta a un paciente (cita creada / correo guardado)
+// se le manda la plantilla con los botones "Aceptar" / "No acepto", para que su
+// decisión quede registrada en la ficha y las campañas la respeten.
+const CONSENT_TEMPLATE_NAME = process.env.CONSENT_TEMPLATE_NAME || "consentimiento_marketing";
+const CONSENT_SENT_MARK = "📨 Enviada la plantilla de consentimiento de marketing";
+async function sendConsentTemplateTo(phone, conversationId, patientName) {
+  const wa = require("./lib/whatsapp");
+  if (!wa.isConfigured()) return false;
+  try {
+    // No repetirla si ya se le envió en esta conversación.
+    if (conversationId) {
+      const { data: prev } = await supabase
+        .from("df_messages").select("id").eq("conversation_id", conversationId).eq("content", CONSENT_SENT_MARK).limit(1).maybeSingle();
+      if (prev) return false;
+    }
+    const to = normalizeWaPhone(phone);
+    if (!to) return false;
+    const tpl = await fetchApprovedTemplate(CONSENT_TEMPLATE_NAME);
+    // Si la plantilla tiene variables, la primera se rellena con el nombre.
+    const params = [];
+    for (let i = 0; i < (tpl.bodyVarCount || 0); i++) {
+      params.push(i === 0 ? (String(patientName || "").trim().split(/\s+/)[0] || "paciente") : (tpl.bodyExamples[i] || "-"));
+    }
+    await wa.sendTemplate(to, CONSENT_TEMPLATE_NAME, tpl.language, params);
+    if (conversationId) {
+      const { saveMessage } = require("./lib/bot");
+      await saveMessage(conversationId, "admin", CONSENT_SENT_MARK);
+    }
+    return true;
+  } catch (e) {
+    console.error("[consent template]", e.message);
+    return false;
+  }
+}
+
+// ---- Silencio del bot tras una campaña -------------------------------------
+// Las campañas informativas (nuevo número, consentimiento…) NO son una conversación:
+// si el paciente contesta "Ok" o "gracias", el asistente no debe responder ni retomar
+// nada de antes. Durante esta ventana sus mensajes solo se guardan para recepción.
+const CAMPAIGN_SILENCE_HOURS = Number(process.env.CAMPAIGN_SILENCE_HOURS || 24);
+async function recentCampaignSend(phone) {
+  try {
+    const { phoneVariants } = require("./lib/bot");
+    const variants = phoneVariants(phone);
+    if (!variants.length) return null;
+    const { data: pts } = await supabase.from("df_patients").select("id").in("phone", variants).limit(5);
+    if (!pts || !pts.length) return null;
+    const since = new Date(Date.now() - CAMPAIGN_SILENCE_HOURS * 3600 * 1000).toISOString();
+    const { data: rec } = await supabase
+      .from("df_campaign_recipients")
+      .select("id, sent_at, campaign_id")
+      .in("patient_id", pts.map((p) => p.id))
+      .eq("status", "sent")
+      .gte("sent_at", since)
+      .order("sent_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    return rec || null;
+  } catch (_e) { return null; }
+}
+
+// Deja constancia en la conversación del paciente de que se le ha enviado una campaña.
+// Ese aviso además CORTA el contexto del bot (no arrastra lo hablado antes).
+async function markCampaignInConversation(patientId, phone, campaignName) {
+  try {
+    const { getOrCreateConversation, saveMessage, CAMPAIGN_CONTEXT_MARK } = require("./lib/bot");
+    const { phoneVariants } = require("./lib/bot");
+    const { data: conv } = await supabase
+      .from("df_conversations").select("id")
+      .in("customer_phone", phoneVariants(phone))
+      .eq("channel", "whatsapp")
+      .order("updated_at", { ascending: false })
+      .limit(1).maybeSingle();
+    // Solo si ya existía conversación: no se crean hilos vacíos para toda la lista.
+    if (!conv) return;
+    await saveMessage(conv.id, "admin", `${CAMPAIGN_CONTEXT_MARK}: ${campaignName || "campaña"}`);
+    if (patientId) await supabase.from("df_conversations").update({ patient_id: patientId }).eq("id", conv.id).is("patient_id", null);
+  } catch (_e) { /* no bloquea el envío */ }
 }
 
 app.post("/api/whatsapp/webhook", async (req, res) => {
@@ -3266,6 +3397,20 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
         } catch (_e) {}
         continue;
       }
+      // 1b) Botón "No acepto" (o respuesta explícita de rechazo) -> queda marcado en
+      //     su ficha para no volver a incluirle en ninguna campaña.
+      if ((m.button && isMarketingConsentReject(m.button)) || (m.text && !m.button && isConsentRejectText(m.text))) {
+        const r = await revokeMarketingConsentByPhone(m.from).catch(() => ({ ok: false }));
+        const nombre = (r.patient && String(r.patient.full_name || "").trim().split(/\s+/)[0]) || "";
+        await wa.sendText(m.from,
+          `Entendido${nombre ? ", " + nombre : ""}. No le enviaremos comunicaciones comerciales. Seguimos a su disposición para lo que necesite de la clínica.`
+        ).catch(() => {});
+        try {
+          const conv = await getOrCreateConversation({ channel: "whatsapp", phone: m.from, name: m.name });
+          await saveMessage(conv.id, "user", "🚫 No acepta recibir comunicaciones de marketing");
+        } catch (_e) {}
+        continue;
+      }
       // 2) Botón "Leer más" -> envía el PDF con toda la información.
       if (m.button && isReadMoreButton(m.button)) {
         const caption = 'Aquí tienes toda la información sobre el tratamiento de tus datos. Si estás de acuerdo, pulsa "Aceptar" en el mensaje anterior.';
@@ -3287,7 +3432,23 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
         } catch (_e) {}
         continue;
       }
-      // 3) Foto o documento del paciente: se descarga de Meta, se guarda en Supabase
+      // 3) "BAJA": el paciente revoca el consentimiento de marketing. Tiene prioridad
+      //    sobre el asistente (se lo prometemos al confirmarle el alta) y deja de
+      //    recibir campañas al momento.
+      if (m.text && isOptOutMessage(m.text)) {
+        const r = await revokeMarketingConsentByPhone(m.from).catch(() => ({ ok: false }));
+        const nombre = (r.patient && String(r.patient.full_name || "").trim().split(/\s+/)[0]) || "";
+        await wa.sendText(m.from,
+          `Hecho${nombre ? ", " + nombre : ""}. No volverá a recibir comunicaciones comerciales de Dental Fortes. Si algún día cambia de opinión, escríbanos y lo reactivamos. Seguimos a su disposición para lo que necesite de la clínica.`
+        ).catch(() => {});
+        try {
+          const conv = await getOrCreateConversation({ channel: "whatsapp", phone: m.from, name: m.name });
+          await saveMessage(conv.id, "user", m.text);
+          await saveMessage(conv.id, "assistant", "🚫 Baja de comunicaciones comerciales registrada");
+        } catch (_e) {}
+        continue;
+      }
+      // 4) Foto o documento del paciente: se descarga de Meta, se guarda en Supabase
       //    Storage y queda visible en la conversación del CRM. El bot acusa recibo
       //    (no puede "ver" la imagen; el profesional la revisa desde el panel).
       if (m.media) {
@@ -3309,7 +3470,20 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
         }
         continue;
       }
-      // 4) Resto de mensajes: flujo normal del asistente.
+      // 4b) SILENCIO tras una campaña: si al paciente se le acaba de enviar una
+      //     campaña (aviso de nuevo número, consentimiento…), su respuesta NO la
+      //     contesta el asistente. Se guarda para que la vea recepción y punto.
+      if (m.text) {
+        const campaña = await recentCampaignSend(m.from);
+        if (campaña) {
+          try {
+            const conv = await getOrCreateConversation({ channel: "whatsapp", phone: m.from, name: m.name });
+            await saveMessage(conv.id, "user", m.text);
+          } catch (_e) {}
+          continue;
+        }
+      }
+      // 5) Resto de mensajes: flujo normal del asistente.
       if (!m.text) {
         await wa.sendText(m.from, "De momento solo puedo leer mensajes de texto, fotos y documentos. ¿Me lo escribe, por favor?").catch(() => {});
         continue;
@@ -3318,6 +3492,10 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
       if (result.reply) {
         // Identifica que responde el asistente automático.
         await wa.sendText(m.from, withWaPrefix(WA_BOT_PREFIX, result.reply)).catch((e) => console.error("[wa send]", e.message));
+      }
+      // Alta terminada: se le pide el consentimiento de marketing con su plantilla.
+      if (result.sendConsentTemplate) {
+        await sendConsentTemplateTo(m.from, result.conversation && result.conversation.id, result.conversation && result.conversation.customer_name);
       }
     }
   } catch (err) {
