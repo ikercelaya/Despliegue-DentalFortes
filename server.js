@@ -2829,8 +2829,24 @@ function normalizeWaPhone(raw) {
 // segmento. Se procesa por lotes (BATCH); al reintentar continúa con los que aún no se han
 // intentado (df_campaign_recipients). Solo se envía a pacientes con teléfono y que no hayan
 // hecho opt-out (marketing_consent = false). Requiere plantilla con 0 o 1 variable (nombre).
+// Tope de mensajes de plantilla por DÍA (todas las campañas juntas). Evita saturar la
+// cuenta de WhatsApp; se puede ajustar con DAILY_TEMPLATE_LIMIT.
+const DAILY_TEMPLATE_LIMIT = Math.max(1, Number(process.env.DAILY_TEMPLATE_LIMIT || 100));
+// Cuántas plantillas se han enviado HOY (hora de Madrid), en cualquier campaña.
+async function templatesSentToday() {
+  const ahora = new Date();
+  const hoyMadrid = new Intl.DateTimeFormat("sv-SE", { timeZone: "Europe/Madrid", year: "numeric", month: "2-digit", day: "2-digit" }).format(ahora);
+  // Inicio del día de Madrid, en UTC (con el desfase real de esa fecha).
+  const inicioLocal = new Date(`${hoyMadrid}T00:00:00`);
+  const { count } = await supabase
+    .from("df_campaign_recipients")
+    .select("id", { count: "exact", head: true })
+    .eq("status", "sent")
+    .gte("sent_at", inicioLocal.toISOString());
+  return count || 0;
+}
+
 app.post("/api/campaigns/:id/send", requireAuth, requireReception, async (req, res) => {
-  const BATCH = 100;
   const CONCURRENCY = 6;
   try {
     const wa = require("./lib/whatsapp");
@@ -2910,7 +2926,19 @@ app.post("/api/campaigns/:id/send", requireAuth, requireReception, async (req, r
       }
       return res.json({ sent: 0, failed: 0, remaining: 0, totalEligible: eligible.length, alreadyAll: true, done: true });
     }
-    const batch = pending.slice(0, BATCH);
+
+    // TOPE DIARIO: no se pueden enviar más de DAILY_TEMPLATE_LIMIT plantillas al día
+    // (contando todas las campañas). Lo que no quepa hoy se envía mañana pulsando
+    // "Enviar ahora" otra vez: la campaña recuerda a quién ya se le mandó.
+    const enviadosHoy = await templatesSentToday();
+    const cupoHoy = Math.max(0, DAILY_TEMPLATE_LIMIT - enviadosHoy);
+    if (cupoHoy === 0) {
+      return res.status(429).json({
+        error: `Límite diario alcanzado: hoy ya se han enviado ${enviadosHoy} de ${DAILY_TEMPLATE_LIMIT} mensajes con plantilla. Vuelve a pulsar "Enviar ahora" mañana y continuará con los que faltan.`,
+        dailyLimit: DAILY_TEMPLATE_LIMIT, sentToday: enviadosHoy, remaining: pending.length,
+      });
+    }
+    const batch = pending.slice(0, cupoHoy);
 
     let sent = 0, failed = 0, lastError = null;
     for (let i = 0; i < batch.length; i += CONCURRENCY) {
@@ -2941,6 +2969,10 @@ app.post("/api/campaigns/:id/send", requireAuth, requireReception, async (req, r
       totalEligible: eligible.length,
       skippedNoPhone: matched.length - conTelefono.length,
       skippedNoConsent: sinConsentimiento,
+      // Tope diario: si han quedado pendientes por el límite, se avisa.
+      dailyLimit: DAILY_TEMPLATE_LIMIT,
+      sentToday: enviadosHoy + sent,
+      limitReached: remaining > 0 && batch.length >= cupoHoy,
       error_detail: failed && !sent ? lastError : undefined,
       done: remaining === 0,
     });
@@ -3167,6 +3199,31 @@ app.post("/api/marketing/templates", requireAuth, requireReception, async (req, 
 
 // Editar una plantilla existente en Meta. Al guardar, Meta la vuelve a poner en revisión
 // (PENDING) hasta que la apruebe. El nombre y el idioma NO se pueden cambiar al editar.
+// Elimina una plantilla en Meta (papelera del listado de Marketing). Meta borra por
+// NOMBRE, así que se manda el nombre; también se limpian sus ajustes en el CRM.
+app.delete("/api/marketing/templates/:name", requireAuth, requireReception, async (req, res) => {
+  try {
+    const wabaId = process.env.WHATSAPP_BUSINESS_ACCOUNT_ID || process.env.WABA_ID || "";
+    const token = process.env.WHATSAPP_TOKEN || "";
+    if (!wabaId || !token) return res.status(500).json({ error: "Faltan WHATSAPP_BUSINESS_ACCOUNT_ID o WHATSAPP_TOKEN." });
+    const name = String(req.params.name || "").trim();
+    if (!name) return res.status(400).json({ error: "Falta el nombre de la plantilla." });
+
+    const url = `${META_GRAPH_BASE}/${wabaId}/message_templates?name=${encodeURIComponent(name)}`;
+    const r = await fetch(url, { method: "DELETE", headers: { Authorization: `Bearer ${token}` } });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      const detail = data?.error?.error_user_msg || data?.error?.message || `Meta Graph ${r.status}`;
+      return res.status(502).json({ error: detail });
+    }
+    // Ajustes del CRM asociados a esa plantilla (fecha de creación y mapeo de variables).
+    await supabase.from("df_settings").delete().in("key", ["tpl_created:" + name, "tpl_vars:" + name]).then(() => {}, () => {});
+    return res.json({ ok: true });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 app.post("/api/marketing/templates/:id/edit", requireAuth, requireReception, async (req, res) => {
   try {
     const token = process.env.WHATSAPP_TOKEN || "";
@@ -3305,19 +3362,26 @@ function isOptOutMessage(text) {
 }
 
 // Marca marketing_consent=true del paciente cuyo teléfono coincide (por los últimos 9 dígitos).
+// Etiqueta que marca a quien ha dicho expresamente que NO quiere comunicaciones:
+// así el bot no vuelve a preguntárselo cada vez que reserva una cita.
+const NO_MARKETING_TAG = "sin_marketing";
+
 async function setMarketingConsentByPhone(phone, value) {
   const wa = normalizeWaPhone(phone);
   if (!wa) return { ok: false, reason: "phone" };
   const last9 = wa.slice(-9);
-  const { data: patients } = await supabase.from("df_patients").select("id, full_name, phone, marketing_consent");
+  const { data: patients } = await supabase.from("df_patients").select("id, full_name, phone, marketing_consent, tags");
   const match = (patients || []).find((p) => {
     const pw = normalizeWaPhone(p.phone);
     return pw && pw.slice(-9) === last9;
   });
   if (!match) return { ok: false, reason: "not_found" };
-  if (match.marketing_consent !== value) {
-    await supabase.from("df_patients").update({ marketing_consent: value, updated_at: new Date().toISOString() }).eq("id", match.id);
-  }
+  // Al decir que NO se etiqueta al paciente (para no volver a preguntárselo);
+  // al aceptar, la etiqueta se retira.
+  const tags = Array.isArray(match.tags) ? match.tags.filter((t) => t !== NO_MARKETING_TAG) : [];
+  if (!value) tags.push(NO_MARKETING_TAG);
+  const patch = { marketing_consent: value, tags, updated_at: new Date().toISOString() };
+  await supabase.from("df_patients").update(patch).eq("id", match.id);
   return { ok: true, patient: match };
 }
 const markMarketingConsentByPhone = (phone) => setMarketingConsentByPhone(phone, true);

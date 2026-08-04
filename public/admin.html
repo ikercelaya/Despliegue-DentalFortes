@@ -366,11 +366,14 @@ table td, .agenda-grid .hour { font-variant-numeric: tabular-nums; }
 .chk-row:hover { color:var(--text); }
 .manual-suggest { background:#fff; border:1px solid var(--line-2); border-radius:8px; max-height:260px; overflow-y:auto; box-shadow:var(--shadow-sm); }
 /* Grupos por tratamiento (etiquetado masivo) */
-.tg-item { border:1px solid var(--line); border-radius:10px; background:#fff; overflow:hidden; }
-.tg-item > summary { list-style:none; cursor:pointer; padding:11px 14px; display:flex; align-items:center; justify-content:space-between; gap:10px; font-weight:700; font-size:13.5px; color:var(--text); }
-.tg-item > summary::-webkit-details-marker { display:none; }
-.tg-count { font-family:var(--font-mono,monospace); font-size:11px; font-weight:600; color:var(--text-3); background:var(--bg-2); border:1px solid var(--line); border-radius:999px; padding:2px 9px; min-width:24px; text-align:center; }
+.tg-list { max-height:60vh; overflow-y:auto; display:flex; flex-direction:column; gap:10px; padding-right:2px; }
+.tg-item { border:1px solid var(--line); border-radius:12px; background:#fff; }
+.tg-head { display:flex; align-items:center; gap:12px; padding:12px 14px; }
+.tg-name { font-weight:700; font-size:14px; color:var(--text); flex:1; min-width:0; }
+.tg-count { font-size:12px; font-weight:600; color:var(--text-3); background:var(--bg-2); border:1px solid var(--line); border-radius:999px; padding:3px 11px; white-space:nowrap; }
+.tg-toggle { padding:5px 13px; font-size:12.5px; white-space:nowrap; }
 .tg-body { padding:0 14px 14px; display:flex; flex-direction:column; gap:10px; }
+.tg-body[hidden] { display:none; }
 .tg-res, .tg-addall { padding:8px 11px; cursor:pointer; border-bottom:1px solid var(--line); font-size:13px; }
 .tg-res:hover, .tg-addall:hover { background:var(--bg-2); }
 .tg-addall { font-weight:700; color:var(--accent); background:#EEF3FC; }
@@ -2157,58 +2160,74 @@ async function renderPatientsList() {
 
 // Configuración de grupos por tratamiento: etiquetar pacientes (individual o masivo) con
 // cada tratamiento, para segmentar mejor las campañas y poder filtrarlos en Pacientes.
-function openTreatmentGroupsModal() {
-  const treats = cache.treatments || [];
+async function openTreatmentGroupsModal() {
   openModal(`
     <h3>Grupos por tratamiento</h3>
     <p style="color:var(--text-3);font-size:13px;margin:0 0 14px">
       Añade pacientes al grupo de cada tratamiento que estén recibiendo o hayan recibido.
       Sirve para segmentar campañas y filtrar en Pacientes.
     </p>
-    <div id="tgList" style="max-height:60vh;overflow-y:auto;display:flex;flex-direction:column;gap:8px">
-      ${treats.length ? treats.map(t => `
-        <details class="tg-item" data-tid="${t.id}" data-tname="${escapeHtml(t.name)}">
-          <summary><span>${escapeHtml(t.name)}</span><span class="tg-count" id="tgcount-${t.id}"></span></summary>
-          <div class="tg-body">
-            <div style="position:relative">
-              <input class="input tg-search" data-tid="${t.id}" placeholder="Buscar pacientes por nombre o teléfono…" autocomplete="off">
-              <div class="manual-suggest tg-results" data-tid="${t.id}" style="display:none"></div>
-            </div>
-            <div class="tg-members" data-tid="${t.id}"><div class="mini-note">Abriendo…</div></div>
-          </div>
-        </details>`).join("")
-        : `<div class="empty-state">No hay tratamientos dados de alta (Configuración → Tratamientos).</div>`}
-    </div>
+    <div id="tgList" class="tg-list"><div class="empty-state">Cargando tratamientos…</div></div>
     <div class="actions"><button class="btn" onclick="closeModal()">Cerrar</button></div>
-  `, { onMount: (body) => {
+  `, { onMount: async (body) => {
+    const list = body.querySelector("#tgList");
+    // Los tratamientos se piden SIEMPRE al servidor: así aparecen todos los del
+    // apartado Tratamientos aunque la caché del navegador esté vacía o anticuada.
+    let treats = [];
+    try {
+      const r = await api("/api/treatments");
+      treats = (r.treatments || []).filter(t => t.active !== false);
+      cache.treatments = r.treatments || [];
+    } catch (e) {
+      list.innerHTML = `<div class="empty-state" style="color:var(--danger)">No se pudieron cargar los tratamientos: ${escapeHtml(e.message)}</div>`;
+      return;
+    }
+    if (!treats.length) {
+      list.innerHTML = `<div class="empty-state">No hay tratamientos dados de alta (Configuración → Tratamientos).</div>`;
+      return;
+    }
+    list.innerHTML = treats.map(t => `
+      <div class="tg-item" data-tid="${escapeHtml(t.id)}">
+        <div class="tg-head">
+          <span class="tg-name">${escapeHtml(t.name)}</span>
+          <span class="tg-count" data-count="${escapeHtml(t.id)}">…</span>
+          <button type="button" class="btn tg-toggle" data-tid="${escapeHtml(t.id)}">Ver / añadir</button>
+        </div>
+        <div class="tg-body" data-body="${escapeHtml(t.id)}" hidden>
+          <div style="position:relative">
+            <input class="input tg-search" data-tid="${escapeHtml(t.id)}" placeholder="Busca un paciente por nombre o teléfono…" autocomplete="off">
+            <div class="manual-suggest tg-results" data-tid="${escapeHtml(t.id)}" style="display:none"></div>
+          </div>
+          <div class="tg-members" data-tid="${escapeHtml(t.id)}"><div class="mini-note">Cargando…</div></div>
+        </div>
+      </div>`).join("");
+
     async function loadMembers(tid) {
-      const box = body.querySelector(`.tg-members[data-tid="${tid}"]`);
-      const countEl = body.querySelector(`#tgcount-${tid}`);
+      const box = list.querySelector(`.tg-members[data-tid="${tid}"]`);
+      const countEl = list.querySelector(`.tg-count[data-count="${tid}"]`);
       try {
         const { patients } = await api(`/api/treatments/${tid}/patients`);
-        countEl.textContent = patients.length ? `${patients.length}` : "0";
+        if (countEl) countEl.textContent = `${patients.length} paciente${patients.length === 1 ? "" : "s"}`;
+        if (!box) return;
         box.innerHTML = patients.length
           ? patients.map(p => `<div class="tg-member">
-              <span>${escapeHtml(p.full_name)} <span style="color:var(--text-3)">${escapeHtml(fmtPhone(p.phone)||"")}</span></span>
-              <button class="chip-btn" title="Quitar del grupo" onclick="tgRemove('${tid}','${p.id}')">Quitar</button>
+              <span>${escapeHtml(p.full_name)}${p.phone ? ` <span style="color:var(--text-3)">· ${escapeHtml(fmtPhone(p.phone) || p.phone)}</span>` : ""}</span>
+              <button type="button" class="btn tg-remove" data-tid="${escapeHtml(tid)}" data-pid="${escapeHtml(p.id)}">Quitar</button>
             </div>`).join("")
           : `<div class="mini-note">Aún no hay pacientes en este grupo.</div>`;
-      } catch (e) { box.innerHTML = `<div class="mini-note" style="color:var(--danger)">No se pudo cargar.</div>`; }
+      } catch (e) {
+        if (countEl) countEl.textContent = "—";
+        if (box) box.innerHTML = `<div class="mini-note" style="color:var(--danger)">No se pudo cargar.</div>`;
+      }
     }
-    // Cargar miembros al abrir cada acordeón (una vez)
-    body.querySelectorAll(".tg-item").forEach(det => {
-      det.addEventListener("toggle", () => {
-        if (det.open && !det.dataset.loaded) { det.dataset.loaded = "1"; loadMembers(det.dataset.tid); }
-      });
-    });
-    // Reexpone loadMembers y helpers para los onclick globales
-    window.__tgReload = loadMembers;
-    // Buscador de pacientes por grupo (delegado)
+    // Contadores de todos los grupos al abrir (para ver de un vistazo cómo están).
+    treats.forEach(t => loadMembers(t.id));
+
     let tgTimer;
-    body.addEventListener("input", (e) => {
+    list.addEventListener("input", (e) => {
       const inp = e.target.closest(".tg-search"); if (!inp) return;
       const tid = inp.dataset.tid;
-      const results = body.querySelector(`.tg-results[data-tid="${tid}"]`);
+      const results = list.querySelector(`.tg-results[data-tid="${tid}"]`);
       clearTimeout(tgTimer);
       const q = inp.value.trim();
       if (q.length < 2) { results.style.display = "none"; return; }
@@ -2218,38 +2237,53 @@ function openTreatmentGroupsModal() {
           if (!patients.length) { results.innerHTML = `<div style="padding:8px 10px;color:var(--text-3);font-size:13px">Sin resultados</div>`; results.style.display = "block"; return; }
           const ids = patients.map(p => p.id).join(",");
           results.innerHTML =
-            `<div class="tg-addall" data-tid="${tid}" data-ids="${ids}">+ Añadir los ${patients.length} resultados</div>` +
+            `<div class="tg-addall" data-tid="${tid}" data-ids="${ids}">+ Añadir los ${patients.length} resultados al grupo</div>` +
             patients.map(p => `<div class="tg-res" data-tid="${tid}" data-pid="${p.id}">
-              <strong>${escapeHtml(p.full_name)}</strong> <span style="color:var(--text-3)">${escapeHtml(fmtPhone(p.phone)||"")}</span></div>`).join("");
+              <strong>${escapeHtml(p.full_name)}</strong> <span style="color:var(--text-3)">${escapeHtml(fmtPhone(p.phone) || "sin teléfono")}</span></div>`).join("");
           results.style.display = "block";
         } catch (_e) {}
       }, 250);
     });
-    // Clicks en resultados (añadir individual o masivo)
-    body.addEventListener("click", async (e) => {
+
+    list.addEventListener("click", async (e) => {
+      const toggle = e.target.closest(".tg-toggle");
       const one = e.target.closest(".tg-res");
       const all = e.target.closest(".tg-addall");
+      const del = e.target.closest(".tg-remove");
+      if (toggle) {
+        const bodyEl = list.querySelector(`.tg-body[data-body="${toggle.dataset.tid}"]`);
+        bodyEl.hidden = !bodyEl.hidden;
+        toggle.textContent = bodyEl.hidden ? "Ver / añadir" : "Ocultar";
+        if (!bodyEl.hidden) bodyEl.querySelector(".tg-search").focus();
+        return;
+      }
       if (one) {
-        try { await api(`/api/treatments/${one.dataset.tid}/patients`, { method: "POST", body: { patient_ids: [one.dataset.pid] } });
-          toast("Añadido al grupo", "success"); one.remove(); loadMembers(one.dataset.tid); }
-        catch (err) { toast(err.message, "error"); }
+        try {
+          await api(`/api/treatments/${one.dataset.tid}/patients`, { method: "POST", body: { patient_ids: [one.dataset.pid] } });
+          toast("Añadido al grupo", "success");
+          one.remove();
+          loadMembers(one.dataset.tid);
+        } catch (err) { toast(err.message, "error"); }
       } else if (all) {
         const ids = all.dataset.ids.split(",").filter(Boolean);
-        try { await api(`/api/treatments/${all.dataset.tid}/patients`, { method: "POST", body: { patient_ids: ids } });
-          toast(`${ids.length} pacientes añadidos`, "success");
-          body.querySelector(`.tg-results[data-tid="${all.dataset.tid}"]`).style.display = "none";
-          loadMembers(all.dataset.tid); }
-        catch (err) { toast(err.message, "error"); }
+        try {
+          await api(`/api/treatments/${all.dataset.tid}/patients`, { method: "POST", body: { patient_ids: ids } });
+          toast(`${ids.length} paciente(s) añadidos`, "success");
+          list.querySelector(`.tg-results[data-tid="${all.dataset.tid}"]`).style.display = "none";
+          list.querySelector(`.tg-search[data-tid="${all.dataset.tid}"]`).value = "";
+          loadMembers(all.dataset.tid);
+        } catch (err) { toast(err.message, "error"); }
+      } else if (del) {
+        try {
+          await api(`/api/treatments/${del.dataset.tid}/patients/${del.dataset.pid}`, { method: "DELETE" });
+          toast("Quitado del grupo", "success");
+          loadMembers(del.dataset.tid);
+        } catch (err) { toast(err.message, "error"); }
       }
     });
   }});
 }
 
-window.tgRemove = async function(treatmentId, patientId) {
-  try { await api(`/api/treatments/${treatmentId}/patients/${patientId}`, { method: "DELETE" });
-    if (window.__tgReload) window.__tgReload(treatmentId); }
-  catch (err) { toast(err.message, "error"); }
-};
 
 // ====================================================================
 // PRESUPUESTOS — tablero Pendiente de aceptación / Aceptado
@@ -3188,6 +3222,10 @@ async function loadTemplatesList() {
             <td style="text-align:right;white-space:nowrap">
               ${t.id ? `<button class="btn" style="padding:5px 12px;font-size:12px" onclick="openEditTemplateModal('${escapeHtml(key)}')">Editar</button>`
                      : `<span class="mini-note">sin id</span>`}
+              <button class="icon-btn danger" title="Eliminar plantilla de Meta" style="margin-left:6px;vertical-align:middle"
+                onclick="deleteTemplate('${escapeHtml(t.name)}')">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
+              </button>
             </td>
           </tr>`;
         }).join("")}
@@ -3335,6 +3373,16 @@ function openEditTemplateModal(key) {
 }
 window.openEditTemplateModal = openEditTemplateModal;
 
+// Eliminar una plantilla de Meta desde el CRM (papelera del listado).
+window.deleteTemplate = async function (name) {
+  if (!confirm(`¿Eliminar la plantilla "${name}" de Meta?\n\nDejará de poder usarse en campañas. Esta acción no se puede deshacer.`)) return;
+  try {
+    await api(`/api/marketing/templates/${encodeURIComponent(name)}`, { method: "DELETE" });
+    toast("Plantilla eliminada", "success");
+    loadTemplatesList();
+  } catch (err) { toast(err.message, "error"); }
+};
+
 // Etiquetas y utilidades de campañas (usadas por la tabla y el modal de detalles).
 const CAMPAIGN_STATUS_LABEL = { draft: "Borrador", scheduled: "Programada", sent: "Enviada", cancelled: "Cancelada" };
 let campaignsCache = {};
@@ -3423,6 +3471,7 @@ window.sendCampaign = async function (id) {
       if (r.remaining > 0) out += ` · Quedan ${r.remaining} (pulsa "Enviar ahora" otra vez)`;
       if (r.skippedNoPhone) out += ` · ${r.skippedNoPhone} sin teléfono`;
       if (r.skippedNoConsent) out += ` · ${r.skippedNoConsent} sin consentimiento de marketing`;
+      if (r.limitReached) out += ` · Límite diario de ${r.dailyLimit} alcanzado: continúa mañana`;
       if (r.error_detail) out += ` · Error de WhatsApp: ${r.error_detail}`;
     }
     toast(out, r.failed && !r.sent ? "error" : "success");
