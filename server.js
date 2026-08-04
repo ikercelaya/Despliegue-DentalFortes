@@ -2948,6 +2948,18 @@ async function insertCampaignRecipient(row) {
   } catch (_e) { /* el registro es best-effort: nunca debe romper el envío */ }
 }
 
+// Estado del correo (lo consulta la ventana de "Enviar por correo" para avisar si se
+// está usando el remitente de pruebas de Resend, que solo llega a tu propia dirección).
+app.get("/api/marketing/email-status", requireAuth, requireReception, (_req, res) => {
+  const mailer = require("./lib/email");
+  return res.json({
+    configured: mailer.isConfigured(),
+    from: mailer.resendFrom(),
+    testSender: mailer.isTestSender(),
+    replyTo: mailer.resendReplyTo() || null,
+  });
+});
+
 // Cupo semanal para el panel de Marketing (contador de la cabecera).
 app.get("/api/marketing/quota", requireAuth, requireReception, async (_req, res) => {
   try {
@@ -3109,7 +3121,7 @@ app.post("/api/campaigns/:id/send-email", requireAuth, requireReception, async (
   try {
     const mailer = require("./lib/email");
     if (!mailer.isConfigured()) {
-      return res.status(503).json({ error: "El correo no está configurado: añade RESEND_API_KEY y RESEND_FROM en Vercel." });
+      return res.status(503).json({ error: "El correo no está configurado: añade RESEND_API_KEY en Vercel." });
     }
     const { data: campaign, error: cErr } = await supabase
       .from("df_campaigns").select("*").eq("id", req.params.id).single();
@@ -3194,6 +3206,7 @@ app.post("/api/campaigns/:id/send-email", requireAuth, requireReception, async (
     }
     return res.json({
       channel: "email", sent, failed, remaining: 0, totalEligible: eligible.length,
+      testSender: mailer.isTestSender(),
       skippedNoEmail: matched.length - conEmail.length,
       skippedNoConsent: sinConsentimiento,
       error_detail: failed && !sent ? lastError : undefined,
@@ -3240,6 +3253,7 @@ app.get("/api/marketing/diagnose", requireAuth, requireReception, async (_req, r
     configured: mailer.isConfigured(),
     from: mailer.resendFrom() || null,
     api_key_set: !!process.env.RESEND_API_KEY,
+    test_sender: mailer.isTestSender(),
   };
 
   // PDF de consentimiento: es lo que se envía al pulsar "Leer más". Si Meta no puede

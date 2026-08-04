@@ -3510,6 +3510,7 @@ window.sendCampaignEmail = async function (id) {
       <input id="mailSubject" type="text" maxlength="200" style="width:100%" value="${escapeHtml(c.name || "Dental Fortes")}">
     </div>
     <div id="mailCount" style="color:var(--text-3);font-size:12.5px;margin-top:10px">Calculando destinatarios…</div>
+    <div id="mailSenderWarn" style="display:none;margin-top:10px;padding:9px 11px;border-radius:8px;background:rgba(234,179,8,.12);color:#8a6100;font-size:12.5px"></div>
     <div class="actions">
       <button class="btn" onclick="closeModal()">Cancelar</button>
       <button class="btn primary" id="mailSendBtn">✉️ Enviar correos</button>
@@ -3525,6 +3526,15 @@ window.sendCampaignEmail = async function (id) {
         (p.count - p.withEmail > 0 ? ` ${p.count - p.withEmail} del segmento no tienen correo en su ficha.` : "") +
         (!p.serviceTemplate && p.withEmail - p.withEmailConsent > 0 ? ` ${p.withEmail - p.withEmailConsent} no han aceptado comunicaciones comerciales.` : "");
     } catch (_e) { info.textContent = ""; }
+    // Aviso si aún no hay dominio propio: Resend solo entregaría a tu propia dirección.
+    try {
+      const st = await api("/api/marketing/email-status");
+      if (st.testSender) {
+        const w = document.getElementById("mailSenderWarn");
+        w.style.display = "block";
+        w.innerHTML = `<strong>Modo pruebas.</strong> Se envía desde <code>${escapeHtml(st.from)}</code>, el remitente de pruebas de Resend: solo llega al correo de tu cuenta de Resend, los pacientes no lo recibirán. Para enviar de verdad, verifica un dominio en Resend y añade <code>RESEND_FROM</code> en Vercel.`;
+      }
+    } catch (_e) { /* informativo */ }
   }});
 };
 
@@ -3540,6 +3550,7 @@ async function doSendCampaignEmail(id, asunto) {
       if (r.skippedNoEmail) out += ` · ${r.skippedNoEmail} sin correo en su ficha`;
       if (r.skippedNoConsent) out += ` · ${r.skippedNoConsent} sin consentimiento`;
       if (r.error_detail) out += ` · Error de Resend: ${r.error_detail}`;
+      if (r.testSender) out += " · Modo pruebas: solo llegan a tu correo de Resend";
     }
     toast(out, r.failed && !r.sent ? "error" : "success");
     closeModal();
@@ -4301,9 +4312,11 @@ function openDiagnoseModal() {
         ${row("El token puede leer la WABA", c.leer_waba ? c.leer_waba.ok : null, c.leer_waba ? (c.leer_waba.ok ? ("Cuenta: " + (c.leer_waba.nombre || "") + (c.leer_waba.review ? " · Revisión: " + c.leer_waba.review : "") + (c.leer_waba.verificacion ? " · Negocio: " + c.leer_waba.verificacion : "")) : (c.leer_waba.error || "") + (c.leer_waba.code ? " (código " + c.leer_waba.code + ")" : "")) : "no comprobado")}
         ${row("El token puede listar plantillas", c.listar_plantillas ? c.listar_plantillas.ok : null, c.listar_plantillas ? (c.listar_plantillas.ok ? "Acceso de lectura correcto" : (c.listar_plantillas.error || "") + (c.listar_plantillas.code ? " (código " + c.listar_plantillas.code + ")" : "")) : "no comprobado")}
         ${row("El token puede CREAR plantillas", c.crear_plantilla ? c.crear_plantilla.ok : null, c.crear_plantilla ? (c.crear_plantilla.ok ? "Creación permitida" : (c.crear_plantilla.error || "") + (c.crear_plantilla.code ? " (código " + c.crear_plantilla.code + (c.crear_plantilla.subcode ? "/" + c.crear_plantilla.subcode : "") + ")" : "")) : "no comprobado")}
-        ${r.email ? row("Correo (Resend) para campañas por email", r.email.configured,
-            r.email.configured ? "Remitente: " + r.email.from
-              : "Faltan " + [!r.email.api_key_set ? "RESEND_API_KEY" : null, !r.email.from ? "RESEND_FROM" : null].filter(Boolean).join(" y ") + " en Vercel") : ""}
+        ${r.email ? row("Correo (Resend) para campañas por email", r.email.configured && !r.email.test_sender,
+            !r.email.configured ? "Falta RESEND_API_KEY en Vercel"
+              : r.email.test_sender
+                ? "Modo pruebas (" + r.email.from + "): solo llega a tu propia dirección. Añade RESEND_FROM con un dominio verificado para escribir a los pacientes."
+                : "Remitente: " + r.email.from) : ""}
         ${r.consent_pdf ? row('PDF de consentimiento (botón "Leer más")', r.consent_pdf.file_found && r.consent_pdf.public_url_set,
             (r.consent_pdf.file_found ? "Archivo: " + r.consent_pdf.file : "No se encuentra el PDF en /public") +
             " · " + r.consent_pdf.url +
