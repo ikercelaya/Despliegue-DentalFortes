@@ -27,7 +27,7 @@ function madridWeekdayAndTime(iso) {
   const hh = m.hour === "24" ? "00" : m.hour;
   return { weekday: WD[m.weekday], hhmm: `${hh}:${m.minute}` };
 }
-const { ensurePaymentForAppointment } = require("./lib/billing");
+const { ensurePaymentForAppointment, clearPendingPaymentForAppointment } = require("./lib/billing");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -583,6 +583,18 @@ app.get("/api/dashboard/billing", requireAuth, requireReception, async (req, res
     ]);
     const apptMap = Object.fromEntries((appts || []).map((a) => [a.id, a]));
 
+    // Un cobro PENDIENTE cuya cita ya no existe (se borró) o está cancelada no se va a
+    // cobrar nunca: no debe sumar en "Facturación pendiente". Se comprueba con una
+    // consulta acotada a esas citas para no depender del listado completo de arriba.
+    const idsPendientes = [...new Set((pays || [])
+      .filter((p) => !p.paid && p.appointment_id).map((p) => p.appointment_id))];
+    const citasFantasma = new Set(idsPendientes);
+    if (idsPendientes.length) {
+      const { data: vivas } = await supabase
+        .from("df_appointments").select("id, status").in("id", idsPendientes);
+      for (const a of vivas || []) if (a.status !== "cancelled") citasFantasma.delete(a.id);
+    }
+
     const now = new Date();
     const ageOf = (bd) => {
       if (!bd) return null;
@@ -601,6 +613,7 @@ app.get("/api/dashboard/billing", requireAuth, requireReception, async (req, res
     let totalFacturado = 0, totalPendiente = 0, numPagos = 0, numPendientes = 0;
     const byTreatment = {}, byMonth = {}, byProfFacturado = {};
     for (const p of pays || []) {
+      if (!p.paid && p.appointment_id && citasFantasma.has(p.appointment_id)) continue;
       const a = p.appointment_id ? apptMap[p.appointment_id] : null;
       const tId = a ? a.treatment_id : null;
       const pId = a ? a.professional_id : null;
@@ -960,6 +973,26 @@ app.patch("/api/appointments/:id", requireAuth, async (req, res) => {
       .select()
       .single();
     if (error) throw error;
+
+    // El cobro sigue el estado de la cita:
+    //  · al CANCELARLA se borra su cobro pendiente (deja de contar como facturación);
+    //  · al reabrirla o al cambiarle el tratamiento se vuelve a generar con el precio
+    //    que corresponda (los cobros ya pagados no se tocan nunca).
+    try {
+      const seCancela = data.status === "cancelled" && before.status !== "cancelled";
+      const seReabre = before.status === "cancelled" && data.status !== "cancelled";
+      const cambiaTratamiento = (data.treatment_id || null) !== (before.treatment_id || null);
+      if (seCancela) {
+        await clearPendingPaymentForAppointment(supabase, data.id);
+      } else if (seReabre || cambiaTratamiento) {
+        if (cambiaTratamiento) await clearPendingPaymentForAppointment(supabase, data.id);
+        await ensurePaymentForAppointment(supabase, {
+          appointmentId: data.id, patientId: data.patient_id,
+          treatmentId: data.treatment_id, startsAt: data.starts_at,
+        });
+      }
+    } catch (e) { console.error("[appointments/update/cobro]", e.message); }
+
     await syncAppointmentToGoogle(data.id, before).catch((e) => console.error("[google-calendar/update]", e.message));
     return res.json({ appointment: data });
   } catch (err) {
@@ -975,6 +1008,10 @@ app.delete("/api/appointments/:id", requireAuth, async (req, res) => {
       .select("id, professional_id, google_event_id")
       .eq("id", req.params.id)
       .maybeSingle();
+    // El cobro pendiente de esa cita se borra con ella: si no, seguiría contando en
+    // "Facturación pendiente" del dashboard y en la ficha del paciente.
+    await clearPendingPaymentForAppointment(supabase, req.params.id, { detachPaid: true })
+      .catch((e) => console.error("[appointments/delete/cobro]", e.message));
     const { error } = await supabase.from("df_appointments").delete().eq("id", req.params.id);
     if (error) throw error;
     if (before?.google_event_id) {
@@ -1108,7 +1145,12 @@ app.patch("/api/cancellations/:id", requireAuth, async (req, res) => {
     if (status === "handled" && reqRow?.appointment_id) {
       const { error: aErr } = await supabase.from("df_appointments")
         .update({ status: "cancelled" }).eq("id", reqRow.appointment_id);
-      if (!aErr) appointmentCancelled = true;
+      if (!aErr) {
+        appointmentCancelled = true;
+        // La cita cancelada ya no se cobra: fuera su cobro pendiente.
+        await clearPendingPaymentForAppointment(supabase, reqRow.appointment_id)
+          .catch((e) => console.error("[cancelaciones/cobro]", e.message));
+      }
     }
     return res.json({ ok: true, appointmentCancelled });
   } catch (err) {
@@ -1457,6 +1499,8 @@ async function runReminders() {
         auto_cancelled: true,
         notes: [a.notes, "Cancelada automáticamente por falta de confirmación"].filter(Boolean).join(" · "),
       }).eq("id", a.id);
+      await clearPendingPaymentForAppointment(supabase, a.id)
+        .catch((e) => console.error("[autocancel/cobro]", e.message));
       result.cancelled++;
     }
   }
@@ -1903,6 +1947,19 @@ app.patch("/api/patients/:id/payments/:pid", requireAuth, async (req, res) => {
       .from("df_patient_payments").update(patch).eq("id", req.params.pid).select().single();
     if (error) throw error;
     return res.json({ payment: data });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// Eliminar un cobro de la ficha del paciente (p. ej. uno que quedó suelto de una cita
+// borrada antes de que el CRM lo hiciera solo). Desaparece de la ficha y de Facturación.
+app.delete("/api/patients/:id/payments/:pid", requireAuth, requireReception, async (req, res) => {
+  try {
+    const { error } = await supabase
+      .from("df_patient_payments").delete().eq("id", req.params.pid).eq("patient_id", req.params.id);
+    if (error) throw error;
+    return res.json({ ok: true });
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }

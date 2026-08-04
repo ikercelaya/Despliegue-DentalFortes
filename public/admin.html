@@ -2557,6 +2557,13 @@ async function renderPatientDetail(id) {
           <div class="pay-actions">
             <button class="chip-btn" title="Editar importe" onclick="editPayment('${id}','${pay.id}', ${Number(pay.amount_eur)||0}, ${JSON.stringify(escapeHtml(pay.concept||"")).replace(/"/g,'&quot;')})">✎</button>
             <button class="chip-btn ${pay.paid?'':'ok'}" onclick="setPaymentPaid('${id}','${pay.id}', ${pay.paid?'false':'true'})">${pay.paid?'Marcar pendiente':'Marcar pagado'}</button>
+            <button class="icon-btn danger" title="Eliminar cobro" onclick="deletePayment('${id}','${pay.id}')">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="3 6 5 6 21 6"/>
+                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                <line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/>
+              </svg>
+            </button>
           </div>
         </div>`).join("")
       : `<div class="empty-state" style="padding:14px">Sin cobros registrados.</div>`;
@@ -2601,6 +2608,15 @@ window.setPaymentPaid = async function(patientId, payId, paid) {
   try {
     await api(`/api/patients/${patientId}/payments/${payId}`, { method: "PATCH", body: { paid } });
     toast(paid ? "Marcado como pagado" : "Marcado como pendiente", "success");
+    renderPatientDetail(patientId);
+  } catch (err) { toast(err.message, "error"); }
+};
+
+window.deletePayment = async function(patientId, payId) {
+  if (!confirm("¿Eliminar este cobro? Dejará de contar en la ficha del paciente y en Facturación.")) return;
+  try {
+    await api(`/api/patients/${patientId}/payments/${payId}`, { method: "DELETE" });
+    toast("Cobro eliminado", "success");
     renderPatientDetail(patientId);
   } catch (err) { toast(err.message, "error"); }
 };
