@@ -2643,12 +2643,19 @@ function campaignSegmentInput(campaign) {
 app.post("/api/campaigns/preview", requireAuth, requireReception, async (req, res) => {
   try {
     const b = req.body || {};
-    const matched = await matchCampaignPatients({
+    // Se puede pedir el recuento de una campaña ya creada (lo usa el envío por correo).
+    let entrada = {
       segments: Array.isArray(b.segments) ? b.segments.map((s) => String(s)) : [],
       treatments: Array.isArray(b.treatments) ? b.treatments : [],
       ageRanges: Array.isArray(b.age_ranges) ? b.age_ranges : [],
       manualPatientIds: Array.isArray(b.manual_patient_ids) ? b.manual_patient_ids : [],
-    });
+    };
+    if (b.campaign_id) {
+      const { data: camp } = await supabase.from("df_campaigns").select("*").eq("id", b.campaign_id).maybeSingle();
+      if (!camp) return res.status(404).json({ error: "Campaña no encontrada." });
+      entrada = campaignSegmentInput(camp);
+    }
+    const matched = await matchCampaignPatients(entrada);
     if (matched == null) return res.json({ count: null, withPhone: null, manualOnly: true });
     const withPhone = matched.filter((p) => p.phone).length;
     // Cuántos de ellos han aceptado recibir comunicaciones comerciales: son los
@@ -2670,7 +2677,12 @@ app.post("/api/campaigns/preview", requireAuth, requireReception, async (req, re
     // Si la campaña usa una plantilla de servicio (consentimiento, aviso de número…)
     // se envía a todos, tengan o no el consentimiento marcado.
     const serviceTemplate = isServiceTemplate(b.template_name);
-    return res.json({ count: matched.length, withPhone, noBirthDate, withConsent, withoutConsent, serviceTemplate });
+    // Para el envío por correo: cuántos tienen email en su ficha y cuántos de esos
+    // han aceptado recibir comunicaciones comerciales.
+    const conEmail = matched.filter((p) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(p.email || "").trim()));
+    const withEmail = conEmail.length;
+    const withEmailConsent = conEmail.filter((p) => p.marketing_consent === true).length;
+    return res.json({ count: matched.length, withPhone, noBirthDate, withConsent, withoutConsent, serviceTemplate, withEmail, withEmailConsent });
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
@@ -2771,7 +2783,13 @@ async function fetchApprovedTemplate(name) {
   const varNums = [...String(body?.text || "").matchAll(/\{\{\s*(\d+)\s*\}\}/g)].map((m) => Number(m[1]));
   const bodyVarCount = varNums.length ? Math.max(...varNums) : 0;
   const bodyExamples = (body && body.example && body.example.body_text && body.example.body_text[0]) || [];
-  return { language: tpl.language, bodyVarCount, bodyExamples };
+  const header = (tpl.components || []).find((c) => c.type === "HEADER" && (c.format === "TEXT" || !c.format));
+  const footer = (tpl.components || []).find((c) => c.type === "FOOTER");
+  return {
+    language: tpl.language, bodyVarCount, bodyExamples,
+    // Textos, para poder reutilizar la misma plantilla en el envío por correo.
+    bodyText: body?.text || "", headerText: header?.text || "", footerText: footer?.text || "",
+  };
 }
 
 // Lee el mapeo de variables guardado para una plantilla (df_settings tpl_vars:<nombre>).
@@ -2829,22 +2847,64 @@ function normalizeWaPhone(raw) {
 // segmento. Se procesa por lotes (BATCH); al reintentar continúa con los que aún no se han
 // intentado (df_campaign_recipients). Solo se envía a pacientes con teléfono y que no hayan
 // hecho opt-out (marketing_consent = false). Requiere plantilla con 0 o 1 variable (nombre).
-// Tope de mensajes de plantilla por DÍA (todas las campañas juntas). Evita saturar la
-// cuenta de WhatsApp; se puede ajustar con DAILY_TEMPLATE_LIMIT.
-const DAILY_TEMPLATE_LIMIT = Math.max(1, Number(process.env.DAILY_TEMPLATE_LIMIT || 100));
-// Cuántas plantillas se han enviado HOY (hora de Madrid), en cualquier campaña.
-async function templatesSentToday() {
-  const ahora = new Date();
-  const hoyMadrid = new Intl.DateTimeFormat("sv-SE", { timeZone: "Europe/Madrid", year: "numeric", month: "2-digit", day: "2-digit" }).format(ahora);
-  // Inicio del día de Madrid, en UTC (con el desfase real de esa fecha).
-  const inicioLocal = new Date(`${hoyMadrid}T00:00:00`);
-  const { count } = await supabase
+// Tope de mensajes de WhatsApp por SEMANA (todas las campañas juntas). Evita saturar
+// la cuenta; se puede ajustar con WEEKLY_TEMPLATE_LIMIT. Los correos NO consumen cupo.
+const WEEKLY_TEMPLATE_LIMIT = Math.max(1, Number(process.env.WEEKLY_TEMPLATE_LIMIT || 200));
+
+// Lunes 00:00 (hora de Madrid) de la semana en curso.
+function startOfWeekMadrid(now = new Date()) {
+  const f = new Intl.DateTimeFormat("en-GB", { timeZone: "Europe/Madrid", weekday: "short", year: "numeric", month: "2-digit", day: "2-digit" });
+  const parts = Object.fromEntries(f.formatToParts(now).map((p) => [p.type, p.value]));
+  const WD = { Mon: 0, Tue: 1, Wed: 2, Thu: 3, Fri: 4, Sat: 5, Sun: 6 };
+  const diasDesdeLunes = WD[parts.weekday] ?? 0;
+  const hoy = new Date(`${parts.year}-${parts.month}-${parts.day}T00:00:00`);
+  hoy.setDate(hoy.getDate() - diasDesdeLunes);
+  return hoy;
+}
+
+// Cuántos mensajes de WhatsApp se han enviado esta semana (en cualquier campaña).
+async function templatesSentThisWeek() {
+  const desde = startOfWeekMadrid();
+  const base = () => supabase
     .from("df_campaign_recipients")
     .select("id", { count: "exact", head: true })
     .eq("status", "sent")
-    .gte("sent_at", inicioLocal.toISOString());
-  return count || 0;
+    .gte("sent_at", desde.toISOString());
+  // Los correos no cuentan para el tope de WhatsApp.
+  const { count, error } = await base().neq("channel", "email");
+  if (!error) return count || 0;
+  // Si la columna 'channel' aún no existe (migración sin ejecutar), cuenta todo.
+  const { count: total } = await base();
+  return total || 0;
 }
+
+// Registra un destinatario de campaña. Si todavía no se ha ejecutado la migración
+// sql/campanas-email.sql, la columna 'channel' no existe: se reintenta sin ella
+// para no perder el registro (evitaría reenvíos duplicados).
+async function insertCampaignRecipient(row) {
+  try {
+    const { error } = await supabase.from("df_campaign_recipients").insert(row);
+    if (error && /channel/i.test(error.message || "")) {
+      const sinCanal = { ...row }; delete sinCanal.channel;
+      await supabase.from("df_campaign_recipients").insert(sinCanal);
+    }
+  } catch (_e) { /* el registro es best-effort: nunca debe romper el envío */ }
+}
+
+// Cupo semanal para el panel de Marketing (contador de la cabecera).
+app.get("/api/marketing/quota", requireAuth, requireReception, async (_req, res) => {
+  try {
+    const sent = await templatesSentThisWeek();
+    const desde = startOfWeekMadrid();
+    const hasta = new Date(desde); hasta.setDate(hasta.getDate() + 7);
+    return res.json({
+      sent, limit: WEEKLY_TEMPLATE_LIMIT, remaining: Math.max(0, WEEKLY_TEMPLATE_LIMIT - sent),
+      weekStart: desde.toISOString(), weekEnd: hasta.toISOString(),
+    });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
 
 app.post("/api/campaigns/:id/send", requireAuth, requireReception, async (req, res) => {
   const CONCURRENCY = 6;
@@ -2927,18 +2987,18 @@ app.post("/api/campaigns/:id/send", requireAuth, requireReception, async (req, r
       return res.json({ sent: 0, failed: 0, remaining: 0, totalEligible: eligible.length, alreadyAll: true, done: true });
     }
 
-    // TOPE DIARIO: no se pueden enviar más de DAILY_TEMPLATE_LIMIT plantillas al día
-    // (contando todas las campañas). Lo que no quepa hoy se envía mañana pulsando
-    // "Enviar ahora" otra vez: la campaña recuerda a quién ya se le mandó.
-    const enviadosHoy = await templatesSentToday();
-    const cupoHoy = Math.max(0, DAILY_TEMPLATE_LIMIT - enviadosHoy);
-    if (cupoHoy === 0) {
+    // TOPE SEMANAL: no se pueden enviar más de WEEKLY_TEMPLATE_LIMIT mensajes de
+    // WhatsApp por semana (contando todas las campañas). Lo que no quepa se envía la
+    // semana siguiente pulsando "Enviar ahora": la campaña recuerda a quién ya se le mandó.
+    const enviadosSemana = await templatesSentThisWeek();
+    const cupoSemana = Math.max(0, WEEKLY_TEMPLATE_LIMIT - enviadosSemana);
+    if (cupoSemana === 0) {
       return res.status(429).json({
-        error: `Límite diario alcanzado: hoy ya se han enviado ${enviadosHoy} de ${DAILY_TEMPLATE_LIMIT} mensajes con plantilla. Vuelve a pulsar "Enviar ahora" mañana y continuará con los que faltan.`,
-        dailyLimit: DAILY_TEMPLATE_LIMIT, sentToday: enviadosHoy, remaining: pending.length,
+        error: `Límite semanal alcanzado: esta semana ya se han enviado ${enviadosSemana} de ${WEEKLY_TEMPLATE_LIMIT} mensajes por WhatsApp. Vuelve a pulsar "Enviar ahora" el lunes y continuará con los que faltan (o envía la campaña por correo, que no consume este cupo).`,
+        weeklyLimit: WEEKLY_TEMPLATE_LIMIT, sentThisWeek: enviadosSemana, remaining: pending.length,
       });
     }
-    const batch = pending.slice(0, cupoHoy);
+    const batch = pending.slice(0, cupoSemana);
 
     let sent = 0, failed = 0, lastError = null;
     for (let i = 0; i < batch.length; i += CONCURRENCY) {
@@ -2948,13 +3008,13 @@ app.post("/api/campaigns/:id/send", requireAuth, requireReception, async (req, r
         try {
           await wa.sendTemplate(pt.waPhone, templateName, tplInfo.language, params);
           sent++;
-          await supabase.from("df_campaign_recipients").insert({ campaign_id: campaign.id, patient_id: pt.id, status: "sent", sent_at: new Date().toISOString() }).then(() => {}, () => {});
+          await insertCampaignRecipient({ campaign_id: campaign.id, patient_id: pt.id, status: "sent", channel: "whatsapp", sent_at: new Date().toISOString() });
           // Corta el contexto del bot en su conversación: la campaña abre una etapa
           // nueva y no debe retomarse nada de lo hablado antes.
           await markCampaignInConversation(pt.id, pt.waPhone, campaign.name);
         } catch (e) {
           failed++; lastError = e.message;
-          await supabase.from("df_campaign_recipients").insert({ campaign_id: campaign.id, patient_id: pt.id, status: "failed" }).then(() => {}, () => {});
+          await insertCampaignRecipient({ campaign_id: campaign.id, patient_id: pt.id, status: "failed", channel: "whatsapp" });
         }
       }));
     }
@@ -2969,10 +3029,10 @@ app.post("/api/campaigns/:id/send", requireAuth, requireReception, async (req, r
       totalEligible: eligible.length,
       skippedNoPhone: matched.length - conTelefono.length,
       skippedNoConsent: sinConsentimiento,
-      // Tope diario: si han quedado pendientes por el límite, se avisa.
-      dailyLimit: DAILY_TEMPLATE_LIMIT,
-      sentToday: enviadosHoy + sent,
-      limitReached: remaining > 0 && batch.length >= cupoHoy,
+      // Tope semanal: si han quedado pendientes por el límite, se avisa.
+      weeklyLimit: WEEKLY_TEMPLATE_LIMIT,
+      sentThisWeek: enviadosSemana + sent,
+      limitReached: remaining > 0 && batch.length >= cupoSemana,
       error_detail: failed && !sent ? lastError : undefined,
       done: remaining === 0,
     });
@@ -2983,6 +3043,110 @@ app.post("/api/campaigns/:id/send", requireAuth, requireReception, async (req, r
 
 // Elimina (cancela) una campaña. Al borrarla se cancela: ya no queda programada ni se
 // enviará. Los destinatarios asociados se borran en cascada (ON DELETE CASCADE).
+// ENVÍO POR CORREO (Resend): misma campaña y mismos destinatarios, pero por email.
+// No consume el cupo semanal de WhatsApp y llega a quien tenga correo en su ficha.
+// El texto se toma de la plantilla de Meta (con las variables ya sustituidas), así no
+// hay que redactar el mensaje dos veces.
+app.post("/api/campaigns/:id/send-email", requireAuth, requireReception, async (req, res) => {
+  const CONCURRENCY = 8;
+  try {
+    const mailer = require("./lib/email");
+    if (!mailer.isConfigured()) {
+      return res.status(503).json({ error: "El correo no está configurado: añade RESEND_API_KEY y RESEND_FROM en Vercel." });
+    }
+    const { data: campaign, error: cErr } = await supabase
+      .from("df_campaigns").select("*").eq("id", req.params.id).single();
+    if (cErr || !campaign) return res.status(404).json({ error: "Campaña no encontrada." });
+    if (campaign.status === "cancelled") return res.status(400).json({ error: "La campaña está cancelada." });
+
+    const templateName = campaign.message_template || (campaign.segment_config || {}).template_name;
+    if (!templateName) return res.status(400).json({ error: "La campaña no tiene plantilla asignada (el correo reutiliza su texto)." });
+    let tplInfo;
+    try { tplInfo = await fetchApprovedTemplate(templateName); }
+    catch (e) { return res.status(400).json({ error: e.message }); }
+    if (!tplInfo.bodyText) return res.status(400).json({ error: "La plantilla no tiene texto que enviar por correo." });
+
+    const varMap = await getTemplateVarMap(templateName);
+    let campaignTreatment = "su tratamiento";
+    try {
+      const trIds = ((campaign.segment_config || {}).treatments) || [];
+      if (trIds.length) {
+        const { data: tr } = await supabase.from("df_treatments").select("name").eq("id", trIds[0]).maybeSingle();
+        if (tr && tr.name) campaignTreatment = tr.name;
+      }
+    } catch (_e) {}
+
+    // Sustituye {{1}}, {{2}}… por los datos de cada paciente (mismo mapeo que WhatsApp).
+    const renderFor = (p) => {
+      const firstName = String(p.full_name || "").trim().split(/\s+/)[0] || "paciente";
+      return String(tplInfo.bodyText).replace(/\{\{\s*(\d+)\s*\}\}/g, (_m, n) => {
+        const m = varMap[Number(n) - 1] || {};
+        if (m.type === "name") return firstName;
+        if (m.type === "phone") return String(p.phone || "").replace(/^\+?34/, "") || "-";
+        if (m.type === "address") return String(p.address || p.notes || "").trim() || "-";
+        if (m.type === "treatment") return campaignTreatment;
+        if (m.type === "fixed") return m.value || tplInfo.bodyExamples[Number(n) - 1] || "-";
+        return Number(n) === 1 ? firstName : (tplInfo.bodyExamples[Number(n) - 1] || "-");
+      });
+    };
+
+    const matched = await matchCampaignPatients(campaignSegmentInput(campaign));
+    if (matched == null) return res.status(400).json({ error: "El segmento es manual/personalizado: no hay destinatarios calculables automáticamente." });
+
+    const audience = campaignAudience(campaign);
+    const conEmail = matched.filter((p) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(p.email || "").trim()));
+    const eligible = audience === "all" ? conEmail : conEmail.filter((p) => p.marketing_consent === true);
+    const sinConsentimiento = conEmail.length - eligible.length;
+    if (!eligible.length) {
+      return res.status(400).json({
+        error: conEmail.length === 0
+          ? "Ningún paciente del segmento tiene correo electrónico en su ficha."
+          : `Ninguno de los ${conEmail.length} paciente(s) con correo ha aceptado recibir comunicaciones comerciales.`,
+      });
+    }
+
+    // No repetir a quien ya se le mandó ESTA campaña por correo.
+    const { data: already } = await supabase
+      .from("df_campaign_recipients").select("patient_id, channel").eq("campaign_id", campaign.id).eq("channel", "email");
+    const attempted = new Set((already || []).map((r) => r.patient_id));
+    const pending = eligible.filter((p) => !attempted.has(p.id));
+    if (!pending.length) {
+      return res.json({ sent: 0, failed: 0, remaining: 0, totalEligible: eligible.length, alreadyAll: true, done: true, channel: "email" });
+    }
+
+    const subject = String(req.body?.subject || campaign.name || "Dental Fortes").slice(0, 200);
+    let sent = 0, failed = 0, lastError = null;
+    for (let i = 0; i < pending.length; i += CONCURRENCY) {
+      const slice = pending.slice(i, i + CONCURRENCY);
+      await Promise.all(slice.map(async (pt) => {
+        try {
+          await mailer.sendEmail({
+            to: pt.email, subject, text: renderFor(pt),
+            headerText: tplInfo.headerText, footerText: tplInfo.footerText,
+          });
+          sent++;
+          await insertCampaignRecipient({ campaign_id: campaign.id, patient_id: pt.id, status: "sent", channel: "email", sent_at: new Date().toISOString() });
+        } catch (e) {
+          failed++; lastError = e.message;
+          await insertCampaignRecipient({ campaign_id: campaign.id, patient_id: pt.id, status: "failed", channel: "email" });
+        }
+      }));
+    }
+    if (campaign.status !== "sent") {
+      await supabase.from("df_campaigns").update({ status: "sent", sent_at: new Date().toISOString() }).eq("id", campaign.id);
+    }
+    return res.json({
+      channel: "email", sent, failed, remaining: 0, totalEligible: eligible.length,
+      skippedNoEmail: matched.length - conEmail.length,
+      skippedNoConsent: sinConsentimiento,
+      error_detail: failed && !sent ? lastError : undefined,
+      done: true,
+    });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 app.delete("/api/campaigns/:id", requireAuth, requireReception, async (req, res) => {
   try {
     const { error } = await supabase.from("df_campaigns").delete().eq("id", req.params.id);
@@ -3011,6 +3175,14 @@ app.get("/api/marketing/diagnose", requireAuth, requireReception, async (_req, r
     checks: {},
     ok: false,
     conclusion: "",
+  };
+
+  // Correo (Resend): para poder enviar campañas por email.
+  const mailer = require("./lib/email");
+  report.email = {
+    configured: mailer.isConfigured(),
+    from: mailer.resendFrom() || null,
+    api_key_set: !!process.env.RESEND_API_KEY,
   };
 
   // PDF de consentimiento: es lo que se envía al pulsar "Leer más". Si Meta no puede
