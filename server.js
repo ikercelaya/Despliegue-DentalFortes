@@ -840,6 +840,11 @@ app.post("/api/appointments", requireAuth, async (req, res) => {
   try {
     const body = req.body || {};
     if (!body.starts_at || !body.ends_at) return res.status(400).json({ error: "Faltan fechas." });
+    // Toda cita va a nombre de un paciente: si no, en la agenda saldría "Sin paciente".
+    if (!body.patient_id) return res.status(400).json({ error: "Elige el paciente de la cita (busca por nombre o teléfono)." });
+    const { data: existePaciente } = await supabase
+      .from("df_patients").select("id").eq("id", body.patient_id).maybeSingle();
+    if (!existePaciente) return res.status(400).json({ error: "El paciente elegido ya no existe. Vuelve a buscarlo." });
     const isFirstVisit = !!body.is_first_visit;
     let cabinet = body.cabinet != null ? Number(body.cabinet) : null;
 
@@ -918,6 +923,10 @@ app.patch("/api/appointments/:id", requireAuth, async (req, res) => {
     const allowed = ["patient_id","professional_id","treatment_id","cabinet","starts_at","ends_at","status","is_first_visit","is_urgent","notes"];
     const patch = {};
     for (const k of allowed) if (k in body) patch[k] = body[k];
+    // No se puede dejar una cita sin paciente (saldría como "Sin paciente" en la agenda).
+    if ("patient_id" in patch && !patch.patient_id) {
+      return res.status(400).json({ error: "Elige el paciente de la cita (busca por nombre o teléfono)." });
+    }
     const { data: before, error: beforeError } = await supabase
       .from("df_appointments")
       .select("*")
@@ -1723,9 +1732,24 @@ app.patch("/api/patients/:id", requireAuth, async (req, res) => {
 
 app.delete("/api/patients/:id", requireAuth, async (req, res) => {
   try {
+    // Sus CITAS se borran con él: si se dejaran, la agenda las mostraría para siempre
+    // como "Sin paciente" (la referencia al paciente se queda a null al borrarlo).
+    const { data: suyas } = await supabase
+      .from("df_appointments").select("id, google_event_id, professional_id").eq("patient_id", req.params.id);
+    for (const a of suyas || []) {
+      await clearPendingPaymentForAppointment(supabase, a.id, { detachPaid: true })
+        .catch((e) => console.error("[patients/delete/cobro]", e.message));
+      if (a.google_event_id) {
+        await deleteGoogleEventForProfessional(a.professional_id, a.google_event_id)
+          .catch((e) => console.error("[patients/delete/google]", e.message));
+      }
+    }
+    if ((suyas || []).length) {
+      await supabase.from("df_appointments").delete().eq("patient_id", req.params.id);
+    }
     const { error } = await supabase.from("df_patients").delete().eq("id", req.params.id);
     if (error) throw error;
-    return res.json({ ok: true });
+    return res.json({ ok: true, appointmentsDeleted: (suyas || []).length });
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
