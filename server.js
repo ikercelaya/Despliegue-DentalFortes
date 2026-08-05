@@ -3610,22 +3610,18 @@ const isReadMoreButton = (b) => buttonMatches(b, CONSENT_READMORE_LABELS, ["leer
 // comunicaciones comerciales. Se marca en su ficha para no volver a escribirle.
 const CONSENT_REJECT_LABELS = ["no acepto", "no, gracias", "no gracias", "no autorizo", "rechazar", "no quiero recibir", "no deseo recibir", "no me interesa", "no"];
 const isMarketingConsentReject = (b) => buttonMatches(b, CONSENT_REJECT_LABELS, ["no_acepto", "reject", "decline", "marketing_no", "no_consent"]);
-// Por TEXTO solo cuentan las frases explícitas (un "no" suelto puede ser respuesta
-// a cualquier otra cosa de la conversación).
-function isConsentRejectText(text) {
-  const t = normLabel(text).replace(/[.!¡¿?,;:]/g, "").trim();
-  return ["no acepto", "no autorizo", "no quiero recibir", "no deseo recibir", "no gracias", "no me interesa"].includes(t);
-}
+// Por TEXTO no se rechaza nada: "no gracias" o "no me interesa" pueden estar contestando
+// a cualquier otra cosa de la conversación (le pasó a un paciente al despedirse tras
+// cancelar su cita). Para darse de baja está la palabra clave BAJA MARKETING.
 
-// BAJA: palabra clave con la que el paciente revoca el consentimiento (se lo
-// prometemos en el mensaje de confirmación, así que tiene que funcionar siempre).
-const OPT_OUT_WORDS = ["baja", "darme de baja", "quiero darme de baja", "dar de baja", "no quiero recibir", "no quiero mas mensajes", "stop", "unsubscribe", "cancelar suscripcion"];
+// BAJA DE MARKETING: solo se da de baja quien escribe EXACTAMENTE "BAJA MARKETING"
+// (da igual en mayúsculas o minúsculas, con o sin tildes o signos). Cualquier otra cosa
+// —"no gracias", "no me interesa", "baja"…— es conversación normal y NO da de baja:
+// dar de baja por error a un paciente que solo estaba respondiendo es peor que no hacerlo.
+const OPT_OUT_KEYWORD = "baja marketing";
 function isOptOutMessage(text) {
-  const t = normLabel(text).replace(/[.!¡¿?,;:]/g, "").trim();
-  if (!t) return false;
-  if (OPT_OUT_WORDS.includes(t)) return true;
-  // "BAJA" suelta (mayúsculas o minúsculas) aunque venga con alguna palabra más.
-  return /^(quiero |deseo |solicito )?(darme de |dar de )?baja$/.test(t);
+  const t = normLabel(text).replace(/[.!¡¿?,;:]/g, "").replace(/\s+/g, " ").trim();
+  return t === OPT_OUT_KEYWORD;
 }
 
 // Marca marketing_consent=true del paciente cuyo teléfono coincide (por los últimos 9 dígitos).
@@ -3730,7 +3726,7 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
         const r = await markMarketingConsentByPhone(m.from).catch(() => ({ ok: false }));
         const nombre = (r.patient && String(r.patient.full_name || "").trim().split(/\s+/)[0]) || "";
         await wa.sendText(m.from,
-          `¡Gracias${nombre ? ", " + nombre : ""}! Hemos registrado tu consentimiento para recibir comunicaciones de Dental Fortes. Puedes darte de baja cuando quieras escribiéndonos "BAJA".`
+          `¡Gracias${nombre ? ", " + nombre : ""}! Hemos registrado tu consentimiento para recibir comunicaciones de Dental Fortes. Puedes darte de baja cuando quieras escribiéndonos "BAJA MARKETING".`
         ).catch(() => {});
         // Deja constancia visible en Conversaciones.
         try {
@@ -3741,7 +3737,9 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
       }
       // 1b) Botón "No acepto" (o respuesta explícita de rechazo) -> queda marcado en
       //     su ficha para no volver a incluirle en ninguna campaña.
-      if ((m.button && isMarketingConsentReject(m.button)) || (m.text && !m.button && isConsentRejectText(m.text))) {
+      // Solo cuenta el BOTÓN "No acepto" de la plantilla. Un "no gracias" escrito en el
+      // chat es conversación normal y NO da de baja a nadie (para eso está BAJA MARKETING).
+      if (m.button && isMarketingConsentReject(m.button)) {
         const r = await revokeMarketingConsentByPhone(m.from).catch(() => ({ ok: false }));
         const nombre = (r.patient && String(r.patient.full_name || "").trim().split(/\s+/)[0]) || "";
         await wa.sendText(m.from,
@@ -3774,9 +3772,9 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
         } catch (_e) {}
         continue;
       }
-      // 3) "BAJA": el paciente revoca el consentimiento de marketing. Tiene prioridad
-      //    sobre el asistente (se lo prometemos al confirmarle el alta) y deja de
-      //    recibir campañas al momento.
+      // 3) "BAJA MARKETING": el paciente revoca el consentimiento. Tiene prioridad sobre
+      //    el asistente (se lo prometemos al confirmarle el alta) y deja de recibir
+      //    campañas al momento. Es la ÚNICA frase que da de baja.
       if (m.text && isOptOutMessage(m.text)) {
         const r = await revokeMarketingConsentByPhone(m.from).catch(() => ({ ok: false }));
         const nombre = (r.patient && String(r.patient.full_name || "").trim().split(/\s+/)[0]) || "";
