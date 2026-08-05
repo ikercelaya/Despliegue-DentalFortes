@@ -840,6 +840,11 @@ app.post("/api/appointments", requireAuth, async (req, res) => {
   try {
     const body = req.body || {};
     if (!body.starts_at || !body.ends_at) return res.status(400).json({ error: "Faltan fechas." });
+    // Toda cita va a nombre de un paciente: si no, en la agenda saldría "Sin paciente".
+    if (!body.patient_id) return res.status(400).json({ error: "Elige el paciente de la cita (busca por nombre o teléfono)." });
+    const { data: existePaciente } = await supabase
+      .from("df_patients").select("id").eq("id", body.patient_id).maybeSingle();
+    if (!existePaciente) return res.status(400).json({ error: "El paciente elegido ya no existe. Vuelve a buscarlo." });
     const isFirstVisit = !!body.is_first_visit;
     let cabinet = body.cabinet != null ? Number(body.cabinet) : null;
 
@@ -918,6 +923,10 @@ app.patch("/api/appointments/:id", requireAuth, async (req, res) => {
     const allowed = ["patient_id","professional_id","treatment_id","cabinet","starts_at","ends_at","status","is_first_visit","is_urgent","notes"];
     const patch = {};
     for (const k of allowed) if (k in body) patch[k] = body[k];
+    // No se puede dejar una cita sin paciente (saldría como "Sin paciente" en la agenda).
+    if ("patient_id" in patch && !patch.patient_id) {
+      return res.status(400).json({ error: "Elige el paciente de la cita (busca por nombre o teléfono)." });
+    }
     const { data: before, error: beforeError } = await supabase
       .from("df_appointments")
       .select("*")
@@ -1723,9 +1732,24 @@ app.patch("/api/patients/:id", requireAuth, async (req, res) => {
 
 app.delete("/api/patients/:id", requireAuth, async (req, res) => {
   try {
+    // Sus CITAS se borran con él: si se dejaran, la agenda las mostraría para siempre
+    // como "Sin paciente" (la referencia al paciente se queda a null al borrarlo).
+    const { data: suyas } = await supabase
+      .from("df_appointments").select("id, google_event_id, professional_id").eq("patient_id", req.params.id);
+    for (const a of suyas || []) {
+      await clearPendingPaymentForAppointment(supabase, a.id, { detachPaid: true })
+        .catch((e) => console.error("[patients/delete/cobro]", e.message));
+      if (a.google_event_id) {
+        await deleteGoogleEventForProfessional(a.professional_id, a.google_event_id)
+          .catch((e) => console.error("[patients/delete/google]", e.message));
+      }
+    }
+    if ((suyas || []).length) {
+      await supabase.from("df_appointments").delete().eq("patient_id", req.params.id);
+    }
     const { error } = await supabase.from("df_patients").delete().eq("id", req.params.id);
     if (error) throw error;
-    return res.json({ ok: true });
+    return res.json({ ok: true, appointmentsDeleted: (suyas || []).length });
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
@@ -3635,7 +3659,9 @@ const revokeMarketingConsentByPhone = (phone) => setMarketingConsentByPhone(phon
 // se le manda la plantilla con los botones "Aceptar" / "No acepto", para que su
 // decisión quede registrada en la ficha y las campañas la respeten.
 const CONSENT_TEMPLATE_NAME = process.env.CONSENT_TEMPLATE_NAME || "consentimiento_marketing";
-const CONSENT_SENT_MARK = "📨 Enviada la plantilla de consentimiento de marketing";
+// La marca la define lib/bot.js: además de dejar constancia en el CRM, le dice al bot que
+// el contexto pasa a ser esa plantilla (no la conversación anterior).
+const { CONSENT_SENT_MARK } = require("./lib/bot");
 async function sendConsentTemplateTo(phone, conversationId, patientName) {
   const wa = require("./lib/whatsapp");
   if (!wa.isConfigured()) return false;
@@ -3666,31 +3692,11 @@ async function sendConsentTemplateTo(phone, conversationId, patientName) {
   }
 }
 
-// ---- Silencio del bot tras una campaña -------------------------------------
-// Las campañas informativas (nuevo número, consentimiento…) NO son una conversación:
-// si el paciente contesta "Ok" o "gracias", el asistente no debe responder ni retomar
-// nada de antes. Durante esta ventana sus mensajes solo se guardan para recepción.
-const CAMPAIGN_SILENCE_HOURS = Number(process.env.CAMPAIGN_SILENCE_HOURS || 24);
-async function recentCampaignSend(phone) {
-  try {
-    const { phoneVariants } = require("./lib/bot");
-    const variants = phoneVariants(phone);
-    if (!variants.length) return null;
-    const { data: pts } = await supabase.from("df_patients").select("id").in("phone", variants).limit(5);
-    if (!pts || !pts.length) return null;
-    const since = new Date(Date.now() - CAMPAIGN_SILENCE_HOURS * 3600 * 1000).toISOString();
-    const { data: rec } = await supabase
-      .from("df_campaign_recipients")
-      .select("id, sent_at, campaign_id")
-      .in("patient_id", pts.map((p) => p.id))
-      .eq("status", "sent")
-      .gte("sent_at", since)
-      .order("sent_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-    return rec || null;
-  } catch (_e) { return null; }
-}
+// ---- Contexto tras una campaña ---------------------------------------------
+// El asistente NUNCA se calla por haber enviado una campaña o el consentimiento: sigue
+// atendiendo al paciente con normalidad. Lo único que cambia es el CONTEXTO — la marca
+// que se deja en la conversación hace que el bot no retome lo hablado antes de ese aviso
+// (lo aplica loadHistory en lib/bot.js).
 
 // Deja constancia en la conversación del paciente de que se le ha enviado una campaña.
 // Ese aviso además CORTA el contexto del bot (no arrastra lo hablado antes).
@@ -3806,25 +3812,30 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
         }
         continue;
       }
-      // 4b) SILENCIO tras una campaña: si al paciente se le acaba de enviar una
-      //     campaña (aviso de nuevo número, consentimiento…), su respuesta NO la
-      //     contesta el asistente. Se guarda para que la vea recepción y punto.
-      if (m.text) {
-        const campaña = await recentCampaignSend(m.from);
-        if (campaña) {
-          try {
-            const conv = await getOrCreateConversation({ channel: "whatsapp", phone: m.from, name: m.name });
-            await saveMessage(conv.id, "user", m.text);
-          } catch (_e) {}
-          continue;
-        }
-      }
+      // 4b) Tras una campaña o el consentimiento el asistente NO se calla: sigue
+      //     atendiendo al paciente. Lo único que cambia es el contexto — la marca que se
+      //     dejó en la conversación hace que el bot no retome lo hablado antes de ese
+      //     aviso (lo gestiona loadHistory en lib/bot.js).
       // 5) Resto de mensajes: flujo normal del asistente.
       if (!m.text) {
         await wa.sendText(m.from, "De momento solo puedo leer mensajes de texto, fotos y documentos. ¿Me lo escribe, por favor?").catch(() => {});
         continue;
       }
-      const result = await handleMessage({ channel: "whatsapp", phone: m.from, name: m.name, text: m.text });
+      let result;
+      try {
+        result = await handleMessage({ channel: "whatsapp", phone: m.from, name: m.name, text: m.text });
+      } catch (err) {
+        // Nunca dejamos al paciente sin respuesta: se le contesta, se avisa a recepción
+        // en su conversación y el motivo queda en los logs para poder arreglarlo.
+        console.error("[wa asistente]", err && err.status, err && err.message, err && err.stack);
+        const aviso = "Disculpe, ahora mismo no puedo atenderle automáticamente. Le responderá una persona del equipo lo antes posible.";
+        await wa.sendText(m.from, withWaPrefix(WA_BOT_PREFIX, aviso)).catch(() => {});
+        try {
+          const conv = await getOrCreateConversation({ channel: "whatsapp", phone: m.from, name: m.name });
+          await saveMessage(conv.id, "assistant", `⚠️ El asistente no pudo responder (${err.message}). Se ha avisado al paciente de que le contestará una persona.`);
+        } catch (_e) {}
+        continue;
+      }
       if (result.reply) {
         // Identifica que responde el asistente automático.
         await wa.sendText(m.from, withWaPrefix(WA_BOT_PREFIX, result.reply)).catch((e) => console.error("[wa send]", e.message));
