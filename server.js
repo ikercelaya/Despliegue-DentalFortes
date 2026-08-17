@@ -3688,6 +3688,21 @@ async function sendConsentTemplateTo(phone, conversationId, patientName) {
   }
 }
 
+// ¿Acaba de llegar otra foto/archivo de este paciente? Si en el último minuto ya se
+// recibió uno, es la misma tanda: se guarda pero no se le vuelve a contestar.
+const MEDIA_BURST_SECONDS = Number(process.env.MEDIA_BURST_SECONDS || 90);
+async function mediaBurst(conversationId) {
+  try {
+    const desde = new Date(Date.now() - MEDIA_BURST_SECONDS * 1000).toISOString();
+    const { data } = await supabase
+      .from("df_messages").select("id")
+      .eq("conversation_id", conversationId).eq("role", "user")
+      .not("image_url", "is", null)
+      .gte("created_at", desde).limit(1);
+    return !!(data && data.length);
+  } catch (_e) { return false; }
+}
+
 // ---- Contexto tras una campaña ---------------------------------------------
 // El asistente NUNCA se calla por haber enviado una campaña o el consentimiento: sigue
 // atendiendo al paciente con normalidad. Lo único que cambia es el CONTEXTO — la marca
@@ -3800,6 +3815,13 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
             ? "📷 Foto enviada por el paciente"
             : `📎 Archivo del paciente: ${m.media.filename || "documento"}`;
           const text = m.media.caption ? `${label} · "${m.media.caption}"` : label;
+          // RÁFAGA DE FOTOS: el paciente suele mandar varias del mismo asunto y llegan como
+          // mensajes independientes. Solo se contesta a la primera; las demás se guardan
+          // (si no, respondería lo mismo dos o tres veces seguidas).
+          if (await mediaBurst(conv.id)) {
+            await saveMessage(conv.id, "user", text, url);
+            continue;
+          }
           const result = await handleMessage({ channel: "whatsapp", phone: m.from, name: m.name, text, imageUrl: url });
           if (result.reply) {
             await wa.sendText(m.from, withWaPrefix(WA_BOT_PREFIX, result.reply)).catch((e) => console.error("[wa send]", e.message));

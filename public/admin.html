@@ -1934,34 +1934,53 @@ async function loadUrgencias() {
     const { urgencies } = await api("/api/urgencies?status=pending");
     window._urgCache = urgencies || [];
     if (!urgencies.length) {
-      box.innerHTML = `<h3>Urgencias pendientes</h3><div class="empty-state" style="padding:18px">No hay urgencias pendientes.</div>`;
+      box.innerHTML = `<h3>Urgencias y consultas pendientes</h3><div class="empty-state" style="padding:18px">No hay nada pendiente.</div>`;
       return;
     }
     box.innerHTML = `
-      <h3>Urgencias pendientes</h3>
+      <h3>Urgencias y consultas pendientes</h3>
       <table>
-        <thead><tr><th>Paciente</th><th>Descripción</th><th>Dolor</th><th>Recibida</th><th></th></tr></thead>
+        <thead><tr><th>Tipo</th><th>Paciente</th><th>Descripción</th><th>Dolor</th><th>Recibida</th><th></th></tr></thead>
         <tbody>
           ${urgencies.map(u => {
             const nombre = (u.df_patients && u.df_patients.full_name) || u.customer_name || "Anónimo";
             const tel = u.customer_phone || (u.df_patients && u.df_patients.phone) || "";
             const desc = [u.summary, u.onset ? "desde " + u.onset : ""].filter(Boolean).join(" · ") || "—";
             const dolor = u.pain_level ? `${u.pain_level}/10` : "—";
+            // Las CONSULTAS no son urgencias: el bot solo deja el aviso para que recepción
+            // llame al paciente y le responda; no hay que agendarle nada por defecto.
+            const esConsulta = u.kind === "consulta";
+            const badge = esConsulta
+              ? '<span class="badge badge-pending">Consulta</span>'
+              : '<span class="badge badge-cancelled">Urgencia</span>';
             return `<tr>
+              <td>${badge}</td>
               <td><strong>${escapeHtml(nombre)}</strong>${tel ? `<div style="color:var(--text-3);font-size:12px">${escapeHtml(fmtPhone(tel))}</div>` : ""}</td>
               <td style="max-width:380px">${escapeHtml(desc)}</td>
               <td>${dolor}</td>
               <td>${fmtDateTime(u.created_at)}</td>
-              <td><button class="btn primary" onclick="agendarUrgencia('${u.id}')">Agendar cita</button></td>
+              <td style="white-space:nowrap;text-align:right">
+                ${u.conversation_id ? `<button class="btn" style="margin-right:6px" onclick="location.hash='conversation/${u.conversation_id}'">Ver conversación</button>` : ""}
+                <button class="btn ${esConsulta ? "" : "primary"}" style="margin-right:6px" onclick="agendarUrgencia('${u.id}')">Agendar cita</button>
+                <button class="btn" onclick="cerrarUrgencia('${u.id}')">Resuelta</button>
+              </td>
             </tr>`;
           }).join("")}
         </tbody>
       </table>
     `;
   } catch (err) {
-    box.innerHTML = `<h3>Urgencias pendientes</h3><div class="empty-state" style="padding:18px">No se pudieron cargar las urgencias.</div>`;
+    box.innerHTML = `<h3>Urgencias y consultas pendientes</h3><div class="empty-state" style="padding:18px">No se pudieron cargar.</div>`;
   }
 }
+// Recepción ya ha llamado al paciente: el aviso deja de estar pendiente.
+window.cerrarUrgencia = async function (id) {
+  try {
+    await api(`/api/urgencies/${id}`, { method: "PATCH", body: { status: "closed" } });
+    toast("Marcada como resuelta", "success");
+    loadUrgencias();
+  } catch (err) { toast(err.message, "error"); }
+};
 window.agendarUrgencia = function(id) {
   const u = (window._urgCache || []).find(x => x.id === id);
   if (!u) return;
