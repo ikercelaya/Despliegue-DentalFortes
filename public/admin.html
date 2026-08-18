@@ -314,6 +314,7 @@ table tr.row-click { cursor: pointer; }
   display: flex; align-items: center; justify-content: center; padding: 20px; z-index: 100; animation: fadeIn .18s ease both; }
 .modal { background: #fff; border: 1px solid var(--line-2); border-radius: 16px; padding: 22px; width: min(560px,100%);
   max-height: 90vh; overflow-y: auto; box-shadow: var(--shadow-lg); animation: cardRise .26s var(--ease) both; }
+.modal.wide { width: min(920px, 100%); }   /* ventanas con tabla (p. ej. importar citas) */
 .modal h3 { margin: 0 0 16px; font-size: 18px; font-weight: 700; color: var(--text); }
 .modal .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
 .modal .row.single { grid-template-columns: 1fr; }
@@ -914,7 +915,7 @@ function handleGoogleCalendarOAuthResult() {
 
 // ---------------- Modal ----------------
 function openModal(html, opts = {}) {
-  $modalRoot.innerHTML = `<div class="modal-bg"><div class="modal" id="modalBody">${html}</div></div>`;
+  $modalRoot.innerHTML = `<div class="modal-bg"><div class="modal${opts.wide ? " wide" : ""}" id="modalBody">${html}</div></div>`;
   const bg = $modalRoot.querySelector(".modal-bg");
   bg.addEventListener("click", (e) => { if (e.target === bg && !opts.preventClose) closeModal(); });
   if (typeof opts.onMount === "function") opts.onMount($modalRoot.querySelector("#modalBody"));
@@ -1926,6 +1927,104 @@ window.dismissCancellation = async function(id) {
   } catch (err) { toast(err.message, "error"); }
 };
 
+// ---- Importar citas de otro programa (Cliniwin) ------------------------------
+const IMPORT_PLANTILLA = "fecha;hora;paciente;telefono;tratamiento;profesional;box;duracion;notas\n" +
+  "25/08/2026;09:30;SERGIO JOSE MATAMOROS SOSA;600111222;Limpieza / higiene;Eva;1;30;\n" +
+  "25/08/2026;11:00;OSCAR CORNEJO BADENAS;;Corona sobre implante;Eva;1;60;revisión anual\n";
+
+function openImportarCitasModal() {
+  openModal(`
+    <h3>Importar citas</h3>
+    <div style="color:var(--text-3);font-size:12.5px;margin:-4px 0 12px">
+      Trae al CRM las citas que ya tienes agendadas en otro programa. Pega el CSV o elige el
+      archivo, revisa la previsualización y luego impórtalas. Las citas ya existentes no se duplican.
+    </div>
+    <div class="row-flex" style="gap:8px;margin-bottom:10px;flex-wrap:wrap">
+      <input type="file" id="impFile" accept=".csv,.txt" style="flex:1;min-width:220px" />
+      <button class="btn" id="impPlantilla">Descargar plantilla</button>
+    </div>
+    <textarea id="impCsv" rows="7" style="width:100%;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px"
+      placeholder="fecha;hora;paciente;telefono;tratamiento;profesional;box;duracion;notas"></textarea>
+    <div style="color:var(--text-3);font-size:11.5px;margin-top:6px">
+      Obligatorias: <strong>fecha</strong>, <strong>hora</strong> y <strong>paciente</strong>. Las demás son opcionales.
+      Fechas como 25/08/2026 (o 2026-08-25) y horas como 11:30.
+    </div>
+    <div id="impResumen" style="margin-top:12px"></div>
+    <div id="impTabla" style="max-height:260px;overflow:auto;margin-top:8px"></div>
+    <div class="actions" style="margin-top:14px">
+      <button class="btn danger" id="impDeshacer" title="Borra del CRM todas las citas que se importaron">Deshacer importación</button>
+      <span style="flex:1"></span>
+      <button class="btn" onclick="closeModal()">Cerrar</button>
+      <button class="btn" id="impPreview">Comprobar</button>
+      <button class="btn primary" id="impGo" disabled>Importar</button>
+    </div>
+  `, { wide: true, onMount: () => {
+    const csvBox = document.getElementById("impCsv");
+    document.getElementById("impFile").onchange = (e) => {
+      const file = e.target.files && e.target.files[0];
+      if (!file) return;
+      const fr = new FileReader();
+      fr.onload = () => { csvBox.value = String(fr.result || ""); };
+      fr.readAsText(file, "utf-8");
+    };
+    document.getElementById("impPlantilla").onclick = () => {
+      // Se muestra en pantalla para copiar (las descargas están limitadas en el panel).
+      csvBox.value = IMPORT_PLANTILLA;
+      toast("Plantilla cargada: sustituye las dos filas de ejemplo por tus citas", "success");
+    };
+    const pintar = (r) => {
+      const color = { ok: "var(--ok, #2e7d32)", duplicada: "#8a6100", error: "#b23a3a" };
+      document.getElementById("impResumen").innerHTML = `
+        <div style="display:flex;gap:14px;flex-wrap:wrap;font-size:13px">
+          <span><strong>${r.importadas}</strong> ${r.dryRun ? "se importarán" : "importadas"}</span>
+          <span><strong>${r.nuevasFichas}</strong> ficha(s) de paciente nueva(s)</span>
+          <span><strong>${r.duplicadas}</strong> ya estaban</span>
+          <span style="color:${r.erroneas ? "#b23a3a" : "inherit"}"><strong>${r.erroneas}</strong> con error</span>
+        </div>`;
+      document.getElementById("impTabla").innerHTML = `
+        <table style="font-size:12.5px">
+          <thead><tr><th>Línea</th><th>Cuándo</th><th>Paciente</th><th>Tratamiento</th><th>Profesional</th><th>Estado</th></tr></thead>
+          <tbody>${(r.filas || []).map(f => `<tr>
+            <td>${f.linea}</td>
+            <td>${escapeHtml(f.cuando || `${f.fecha} ${f.hora}`)}</td>
+            <td>${escapeHtml(f.paciente_crm || f.paciente || "—")}</td>
+            <td>${escapeHtml(f.tratamiento_crm || f.tratamiento || "—")}</td>
+            <td>${escapeHtml(f.profesional_crm || f.profesional || "—")}</td>
+            <td style="color:${color[f.estado] || "inherit"}">${f.estado}${f.motivo ? `<div style="color:var(--text-3);font-size:11px">${escapeHtml(f.motivo)}</div>` : ""}</td>
+          </tr>`).join("")}</tbody>
+        </table>`;
+    };
+    document.getElementById("impPreview").onclick = async () => {
+      try {
+        const r = await api("/api/appointments/import", { method: "POST", body: { csv: csvBox.value, dryRun: true } });
+        pintar(r);
+        document.getElementById("impGo").disabled = !r.importadas;
+        toast(r.importadas ? `${r.importadas} cita(s) listas para importar` : "No hay citas nuevas que importar", r.importadas ? "success" : "error");
+      } catch (err) { toast(err.message, "error"); }
+    };
+    document.getElementById("impGo").onclick = async () => {
+      if (!confirm("¿Importar estas citas a la agenda del CRM?")) return;
+      const btn = document.getElementById("impGo");
+      btn.disabled = true; btn.textContent = "Importando…";
+      try {
+        const r = await api("/api/appointments/import", { method: "POST", body: { csv: csvBox.value, dryRun: false } });
+        pintar(r);
+        toast(`Importadas ${r.importadas} cita(s)` + (r.nuevasFichas ? ` y creadas ${r.nuevasFichas} ficha(s)` : ""), "success");
+        renderAgenda();
+      } catch (err) { toast(err.message, "error"); }
+      btn.textContent = "Importar"; btn.disabled = false;
+    };
+    document.getElementById("impDeshacer").onclick = async () => {
+      if (!confirm("¿Borrar del CRM TODAS las citas importadas?\n\nLas citas creadas a mano o por el bot no se tocan.")) return;
+      try {
+        const r = await api("/api/appointments/import", { method: "DELETE" });
+        toast(`Se han borrado ${r.borradas} cita(s) importadas`, "success");
+        renderAgenda();
+      } catch (err) { toast(err.message, "error"); }
+    };
+  }});
+}
+
 // ---- Urgencias pendientes (bajo el calendario) ----
 async function loadUrgencias() {
   const box = document.getElementById("urgenciasBox");
@@ -2050,6 +2149,7 @@ async function renderAgenda() {
         <button class="btn" id="agNext" title="Siguiente">›</button>
       </div>
       <div class="actions">
+        <button class="btn" id="importApptBtn" title="Traer al CRM las citas que ya están agendadas en otro programa (Cliniwin)">Importar citas</button>
         <button class="btn primary" id="newApptBtn">+ Nueva cita</button>
       </div>
     </div>
@@ -2102,6 +2202,7 @@ async function renderAgenda() {
     renderAgenda();
   };
   document.getElementById("newApptBtn").onclick = () => openAppointmentModal();
+  document.getElementById("importApptBtn").onclick = () => openImportarCitasModal();
   document.getElementById("proFilter").onchange = (e) => { agendaState.professionalId = e.target.value; renderAgenda(); };
   document.getElementById("agView").onchange = (e) => { agendaState.view = e.target.value; renderAgenda(); };
   $main.querySelectorAll(".seg-btn").forEach((b) => { b.onclick = () => { agendaState.range = b.dataset.range; renderAgenda(); }; });

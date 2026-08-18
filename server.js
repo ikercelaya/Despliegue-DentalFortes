@@ -836,6 +836,279 @@ app.get("/api/appointments", requireAuth, async (req, res) => {
   }
 });
 
+// =============================================================
+// IMPORTAR CITAS (p. ej. las que ya están en Cliniwin)
+// -------------------------------------------------------------
+// Recibe un CSV con una cita por línea y las mete en la agenda del CRM. Con
+// dryRun=true solo devuelve la previsualización (no toca nada), para poder revisar
+// antes de importar. Es idempotente: no duplica una cita ya importada.
+// =============================================================
+const IMPORT_SOURCE = "import_cliniwin";
+const IMPORT_MARK = "Importada de Cliniwin";
+
+// CSV sencillo: acepta ";" o "," como separador y comillas dobles.
+function parseCsv(texto) {
+  const limpio = String(texto || "").replace(/^﻿/, "").replace(/\r\n?/g, "\n").trim();
+  if (!limpio) return [];
+  const primera = limpio.split("\n")[0];
+  const sep = (primera.match(/;/g) || []).length > (primera.match(/,/g) || []).length ? ";" : ",";
+  const filas = [];
+  let campo = "", fila = [], enComillas = false;
+  for (let i = 0; i < limpio.length; i++) {
+    const c = limpio[i];
+    if (enComillas) {
+      if (c === '"' && limpio[i + 1] === '"') { campo += '"'; i++; }
+      else if (c === '"') enComillas = false;
+      else campo += c;
+    } else if (c === '"') enComillas = true;
+    else if (c === sep) { fila.push(campo); campo = ""; }
+    else if (c === "\n") { fila.push(campo); filas.push(fila); fila = []; campo = ""; }
+    else campo += c;
+  }
+  fila.push(campo); filas.push(fila);
+  return filas.map((f) => f.map((v) => String(v).trim()));
+}
+
+// Nombres de columna admitidos (así vale cualquier exportación razonable).
+const IMPORT_ALIASES = {
+  fecha: ["fecha", "dia", "día", "date", "fecha cita"],
+  hora: ["hora", "hora inicio", "inicio", "time"],
+  paciente: ["paciente", "nombre", "nombre paciente", "nombre completo", "cliente"],
+  telefono: ["telefono", "teléfono", "movil", "móvil", "tel", "phone"],
+  tratamiento: ["tratamiento", "motivo", "concepto", "descripcion", "descripción", "servicio"],
+  profesional: ["profesional", "doctor", "doctora", "dentista", "odontologo", "odontólogo"],
+  box: ["box", "gabinete", "sillon", "sillón", "cabinet"],
+  duracion: ["duracion", "duración", "minutos", "duracion_min", "duración (min)"],
+  notas: ["notas", "observaciones", "nota", "comentarios"],
+};
+
+function mapImportHeaders(cabecera) {
+  const norm = (s) => String(s || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[._-]/g, " ").replace(/\s+/g, " ").trim();
+  const idx = {};
+  cabecera.forEach((col, i) => {
+    const c = norm(col);
+    for (const [campo, alias] of Object.entries(IMPORT_ALIASES)) {
+      if (idx[campo] == null && alias.includes(c)) idx[campo] = i;
+    }
+  });
+  return idx;
+}
+
+// "25/08/2026" + "11:30" -> Date en hora de Madrid. Admite también 2026-08-25.
+function parseImportDateTime(fecha, hora) {
+  const f = String(fecha || "").trim();
+  const h = String(hora || "").trim();
+  let y, m, d;
+  let mm = f.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})$/);
+  if (mm) { d = +mm[1]; m = +mm[2]; y = +mm[3]; if (y < 100) y += 2000; }
+  else {
+    mm = f.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+    if (!mm) return null;
+    y = +mm[1]; m = +mm[2]; d = +mm[3];
+  }
+  const hm = h.match(/^(\d{1,2})[:.h ]?(\d{2})?/);
+  if (!hm) return null;
+  const hh = +hm[1], mi = hm[2] ? +hm[2] : 0;
+  if (!(y > 2000 && m >= 1 && m <= 12 && d >= 1 && d <= 31 && hh >= 0 && hh <= 23 && mi >= 0 && mi <= 59)) return null;
+  const iso = `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}T${String(hh).padStart(2, "0")}:${String(mi).padStart(2, "0")}:00`;
+  const fechaLocal = new Date(iso);          // el server corre en Europe/Madrid
+  return isNaN(fechaLocal.getTime()) ? null : fechaLocal;
+}
+
+app.post("/api/appointments/import", requireAuth, requireReception, async (req, res) => {
+  try {
+    const { phoneVariants } = require("./lib/bot");
+    const dryRun = req.body?.dryRun !== false;      // por defecto, solo previsualiza
+    const filas = parseCsv(req.body?.csv || "");
+    if (filas.length < 2) return res.status(400).json({ error: "El archivo está vacío o no tiene datos (hace falta la fila de cabecera y al menos una cita)." });
+
+    const idx = mapImportHeaders(filas[0]);
+    const faltan = ["fecha", "hora", "paciente"].filter((c) => idx[c] == null);
+    if (faltan.length) {
+      return res.status(400).json({ error: `Faltan columnas obligatorias: ${faltan.join(", ")}. La cabecera debe incluir fecha, hora y paciente.` });
+    }
+
+    // Catálogos para casar por nombre (sin tildes ni mayúsculas).
+    const norm = (s) => String(s || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/\s+/g, " ").trim();
+    const [{ data: pros }, { data: trats }] = await Promise.all([
+      supabase.from("df_professionals").select("id, name, active"),
+      supabase.from("df_treatments").select("id, name, duration_minutes, active"),
+    ]);
+    const profesionales = (pros || []).map((p) => ({ ...p, n: norm(p.name) }));
+    const tratamientos = (trats || []).map((t) => ({ ...t, n: norm(t.name) }));
+    const buscaProfesional = (txt) => {
+      const n = norm(txt);
+      if (!n) return null;
+      return profesionales.find((p) => p.n === n)
+        || profesionales.find((p) => p.n.split(" ")[0] === n.split(" ")[0])
+        || profesionales.find((p) => p.n.includes(n) || n.includes(p.n.split(" ")[0])) || null;
+    };
+    const buscaTratamiento = (txt) => {
+      const n = norm(txt);
+      if (!n) return null;
+      return tratamientos.find((t) => t.n === n)
+        || tratamientos.find((t) => n.includes(t.n) || t.n.includes(n))
+        // "profilaxis", "higiene", "revision"… casan con el tratamiento que contenga la palabra
+        || tratamientos.find((t) => n.split(/[^a-z0-9ñ]+/).some((w) => w.length > 3 && t.n.includes(w))) || null;
+    };
+
+    // Pacientes: se cargan una vez y se casan por teléfono (solo dígitos) o por nombre.
+    const pacientes = [];
+    for (let desde = 0; desde < 50000; desde += 1000) {
+      const { data, error } = await supabase.from("df_patients").select("id, full_name, phone").range(desde, desde + 999);
+      if (error || !data || !data.length) break;
+      pacientes.push(...data);
+      if (data.length < 1000) break;
+    }
+    const clave = (t) => { const d = String(t || "").replace(/\D/g, ""); return d.length > 9 ? d.slice(-9) : d; };
+    const porTelefono = new Map();
+    const porNombre = new Map();
+    for (const p of pacientes) {
+      const k = clave(p.phone);
+      if (k && !porTelefono.has(k)) porTelefono.set(k, p);
+      const n = norm(p.full_name);
+      if (n && !porNombre.has(n)) porNombre.set(n, p);
+    }
+
+    const resultado = [];
+    let importadas = 0, nuevas = 0, duplicadas = 0, erroneas = 0;
+    const vistas = new Set();
+
+    for (let i = 1; i < filas.length; i++) {
+      const f = filas[i];
+      if (!f.length || f.every((v) => !v)) continue;
+      const get = (campo) => (idx[campo] != null ? f[idx[campo]] : "");
+      const linea = i + 1;
+      const nombre = get("paciente");
+      const inicio = parseImportDateTime(get("fecha"), get("hora"));
+      const fila = {
+        linea, paciente: nombre, fecha: get("fecha"), hora: get("hora"),
+        tratamiento: get("tratamiento"), profesional: get("profesional"),
+      };
+
+      if (!nombre) { erroneas++; resultado.push({ ...fila, estado: "error", motivo: "Sin nombre de paciente" }); continue; }
+      if (!inicio) { erroneas++; resultado.push({ ...fila, estado: "error", motivo: "Fecha u hora no válidas (usa 25/08/2026 y 11:30)" }); continue; }
+
+      // Paciente: por teléfono y, si no, por nombre. Si no existe, se creará.
+      const tel = get("telefono");
+      let paciente = (clave(tel) && porTelefono.get(clave(tel))) || porNombre.get(norm(nombre)) || null;
+      const creaFicha = !paciente;
+
+      const pro = buscaProfesional(get("profesional"));
+      const trat = buscaTratamiento(get("tratamiento"));
+      const dur = Number(get("duracion")) || (trat && trat.duration_minutes) || 30;
+      const fin = new Date(inicio.getTime() + dur * 60000);
+      const boxRaw = Number(String(get("box")).replace(/\D/g, ""));
+      const box = boxRaw >= 1 && boxRaw <= 3 ? boxRaw : null;
+
+      const avisos = [];
+      if (!pro) avisos.push("profesional sin identificar");
+      if (!trat) avisos.push("tratamiento sin identificar (se guarda el texto en notas)");
+      if (creaFicha) avisos.push("se creará la ficha del paciente");
+
+      // Duplicados: dentro del propio archivo y contra la agenda ya existente.
+      const huella = `${norm(nombre)}|${inicio.toISOString()}`;
+      let duplicada = vistas.has(huella);
+      vistas.add(huella);
+      if (!duplicada && paciente) {
+        const { data: yaHay } = await supabase
+          .from("df_appointments").select("id")
+          .eq("patient_id", paciente.id).eq("starts_at", inicio.toISOString())
+          .in("status", ["pending", "confirmed", "done"]).limit(1).maybeSingle();
+        duplicada = !!yaHay;
+      }
+      if (duplicada) {
+        duplicadas++;
+        resultado.push({ ...fila, estado: "duplicada", motivo: "Ya está en la agenda del CRM" });
+        continue;
+      }
+
+      if (dryRun) {
+        importadas++;
+        if (creaFicha) nuevas++;
+        resultado.push({
+          ...fila, estado: "ok",
+          paciente_crm: paciente ? paciente.full_name : `${nombre} (ficha nueva)`,
+          profesional_crm: pro ? pro.name : "—",
+          tratamiento_crm: trat ? trat.name : "—",
+          cuando: inicio.toLocaleString("es-ES", { dateStyle: "short", timeStyle: "short" }),
+          motivo: avisos.join(" · "),
+        });
+        continue;
+      }
+
+      // --- Importación real ---
+      if (!paciente) {
+        const { data: nuevo, error: errP } = await supabase.from("df_patients")
+          .insert({ full_name: nombre, phone: tel || null, source: IMPORT_SOURCE })
+          .select("id, full_name, phone").single();
+        if (errP) { erroneas++; resultado.push({ ...fila, estado: "error", motivo: "No se pudo crear la ficha: " + errP.message }); continue; }
+        paciente = nuevo; nuevas++;
+        porNombre.set(norm(nombre), nuevo);
+        if (clave(tel)) porTelefono.set(clave(tel), nuevo);
+      }
+
+      const notas = [get("tratamiento"), get("notas"), IMPORT_MARK].filter(Boolean).join(" · ");
+      const cita = {
+        patient_id: paciente.id,
+        professional_id: pro ? pro.id : null,
+        treatment_id: trat ? trat.id : null,
+        cabinet: box,
+        starts_at: inicio.toISOString(),
+        ends_at: fin.toISOString(),
+        status: "confirmed",
+        is_first_visit: false,
+        source: IMPORT_SOURCE,
+        notes: notas,
+      };
+      let { error: errA } = await supabase.from("df_appointments").insert(cita);
+      if (errA && /source|check/i.test(errA.message || "")) {
+        // La base de datos aún no admite el origen 'import_cliniwin' (sql/importar-citas.sql
+        // sin ejecutar): se guarda como manual, reconocible por la nota.
+        ({ error: errA } = await supabase.from("df_appointments").insert({ ...cita, source: "manual" }));
+      }
+      if (errA) { erroneas++; resultado.push({ ...fila, estado: "error", motivo: errA.message }); continue; }
+      importadas++;
+      resultado.push({
+        ...fila, estado: "ok",
+        paciente_crm: paciente.full_name,
+        profesional_crm: pro ? pro.name : "—",
+        tratamiento_crm: trat ? trat.name : "—",
+        cuando: inicio.toLocaleString("es-ES", { dateStyle: "short", timeStyle: "short" }),
+        motivo: avisos.join(" · "),
+      });
+    }
+
+    return res.json({
+      dryRun, total: resultado.length,
+      importadas, nuevasFichas: nuevas, duplicadas, erroneas,
+      filas: resultado.slice(0, 500),
+    });
+  } catch (err) {
+    console.error("[appointments/import]", err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// Deshacer la última importación (borra SOLO las citas marcadas como importadas).
+app.delete("/api/appointments/import", requireAuth, requireReception, async (req, res) => {
+  try {
+    const ids = new Set();
+    const { data: porOrigen } = await supabase
+      .from("df_appointments").select("id").eq("source", IMPORT_SOURCE);
+    (porOrigen || []).forEach((a) => ids.add(a.id));
+    // Respaldo por la nota, por si se guardaron como 'manual' (migración sin ejecutar).
+    const { data: porNota } = await supabase
+      .from("df_appointments").select("id").ilike("notes", `%${IMPORT_MARK}%`);
+    (porNota || []).forEach((a) => ids.add(a.id));
+    const lista = [...ids];
+    if (lista.length) await supabase.from("df_appointments").delete().in("id", lista);
+    return res.json({ ok: true, borradas: lista.length });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 app.post("/api/appointments", requireAuth, async (req, res) => {
   try {
     const body = req.body || {};
