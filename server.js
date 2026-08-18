@@ -970,9 +970,52 @@ app.post("/api/appointments/import", requireAuth, requireReception, async (req, 
       if (n && !porNombre.has(n)) porNombre.set(n, p);
     }
 
+    // Agenda que YA hay en el CRM en las fechas del archivo. Se carga de una vez (con
+    // 1.000 citas, preguntar una a una tardaría minutos) y sirve para dos cosas:
+    // detectar las que ya están importadas y avisar de las que se solapan con citas
+    // que se dieron en el CRM mientras la agenda antigua no estaba volcada.
+    const momentos = filas.slice(1)
+      .map((f) => (idx.fecha != null && idx.hora != null ? parseImportDateTime(f[idx.fecha], f[idx.hora]) : null))
+      .filter(Boolean).map((d) => d.getTime());
+    const existentes = [];
+    if (momentos.length) {
+      const desde = new Date(Math.min(...momentos) - 24 * 3600 * 1000).toISOString();
+      const hasta = new Date(Math.max(...momentos) + 24 * 3600 * 1000).toISOString();
+      for (let salto = 0; salto < 20000; salto += 1000) {
+        const { data, error } = await supabase
+          .from("df_appointments")
+          .select("id, patient_id, professional_id, cabinet, starts_at, ends_at, status, df_patients(full_name)")
+          .gte("starts_at", desde).lte("starts_at", hasta)
+          .neq("status", "cancelled")
+          .range(salto, salto + 999);
+        if (error || !data || !data.length) break;
+        existentes.push(...data);
+        if (data.length < 1000) break;
+      }
+    }
+    const yaImportada = new Set(existentes.map((a) => `${a.patient_id}|${Date.parse(a.starts_at)}`));
+    // Choque real: misma franja y mismo box (o mismo profesional) con OTRO paciente.
+    const choqueCon = (ini, fin, box, profId, pacienteId) => {
+      const t1 = ini.getTime(), t2 = fin.getTime();
+      const a = existentes.find((x) => {
+        if (pacienteId && x.patient_id === pacienteId) return false;
+        const s = Date.parse(x.starts_at), e = Date.parse(x.ends_at || x.starts_at);
+        if (!(s < t2 && e > t1)) return false;
+        const mismoBox = box && Number(x.cabinet) === Number(box);
+        const mismoPro = profId && x.professional_id === profId;
+        return mismoBox || mismoPro;
+      });
+      if (!a) return null;
+      const quien = (a.df_patients && a.df_patients.full_name) || "otro paciente";
+      const hora = new Date(a.starts_at).toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" });
+      return `⚠ choca con la cita de ${quien} (${hora}) que ya estaba en el CRM`;
+    };
+
     const resultado = [];
-    let importadas = 0, nuevas = 0, duplicadas = 0, erroneas = 0;
+    const porImportar = [];
+    let importadas = 0, nuevas = 0, duplicadas = 0, erroneas = 0, choques = 0;
     const vistas = new Set();
+    const fichasNuevas = new Set();
 
     for (let i = 1; i < filas.length; i++) {
       const f = filas[i];
@@ -989,9 +1032,11 @@ app.post("/api/appointments/import", requireAuth, requireReception, async (req, 
       if (!nombre) { erroneas++; resultado.push({ ...fila, estado: "error", motivo: "Sin nombre de paciente" }); continue; }
       if (!inicio) { erroneas++; resultado.push({ ...fila, estado: "error", motivo: "Fecha u hora no válidas (usa 25/08/2026 y 11:30)" }); continue; }
 
-      // Paciente: por teléfono y, si no, por nombre. Si no existe, se creará.
+      // Paciente: primero por NOMBRE y, si no consta, por teléfono. En una familia varios
+      // pacientes comparten número (padres e hijos), así que el nombre manda; el teléfono
+      // solo sirve para reconocer a quien está en el CRM con el nombre escrito de otra forma.
       const tel = get("telefono");
-      let paciente = (clave(tel) && porTelefono.get(clave(tel))) || porNombre.get(norm(nombre)) || null;
+      let paciente = porNombre.get(norm(nombre)) || (clave(tel) && porTelefono.get(clave(tel))) || null;
       const creaFicha = !paciente;
 
       const pro = buscaProfesional(get("profesional"));
@@ -1010,22 +1055,22 @@ app.post("/api/appointments/import", requireAuth, requireReception, async (req, 
       const huella = `${norm(nombre)}|${inicio.toISOString()}`;
       let duplicada = vistas.has(huella);
       vistas.add(huella);
-      if (!duplicada && paciente) {
-        const { data: yaHay } = await supabase
-          .from("df_appointments").select("id")
-          .eq("patient_id", paciente.id).eq("starts_at", inicio.toISOString())
-          .in("status", ["pending", "confirmed", "done"]).limit(1).maybeSingle();
-        duplicada = !!yaHay;
-      }
+      if (!duplicada && paciente) duplicada = yaImportada.has(`${paciente.id}|${inicio.getTime()}`);
       if (duplicada) {
         duplicadas++;
         resultado.push({ ...fila, estado: "duplicada", motivo: "Ya está en la agenda del CRM" });
         continue;
       }
 
+      // Choque con una cita que se dio en el CRM mientras la agenda antigua no estaba
+      // volcada: se importa igual (no se pierde), pero se avisa para poder reubicarla.
+      const choque = choqueCon(inicio, fin, box, pro ? pro.id : null, paciente ? paciente.id : null);
+      if (choque) { choques++; avisos.unshift(choque); }
+
       if (dryRun) {
         importadas++;
-        if (creaFicha) nuevas++;
+        // Una ficha por paciente, aunque tenga varias citas en el archivo.
+        if (creaFicha && !fichasNuevas.has(norm(nombre))) { fichasNuevas.add(norm(nombre)); nuevas++; }
         resultado.push({
           ...fila, estado: "ok",
           paciente_crm: paciente ? paciente.full_name : `${nombre} (ficha nueva)`,
@@ -1037,51 +1082,77 @@ app.post("/api/appointments/import", requireAuth, requireReception, async (req, 
         continue;
       }
 
-      // --- Importación real ---
-      if (!paciente) {
-        const { data: nuevo, error: errP } = await supabase.from("df_patients")
-          .insert({ full_name: nombre, phone: tel || null, source: IMPORT_SOURCE })
-          .select("id, full_name, phone").single();
-        if (errP) { erroneas++; resultado.push({ ...fila, estado: "error", motivo: "No se pudo crear la ficha: " + errP.message }); continue; }
-        paciente = nuevo; nuevas++;
-        porNombre.set(norm(nombre), nuevo);
-        if (clave(tel)) porTelefono.set(clave(tel), nuevo);
-      }
+      // --- Importación real: se apunta y se guarda todo junto al final (con 1.000
+      //     citas, insertarlas de una en una tardaría minutos). ---
+      porImportar.push({
+        fila, nombre, tel, inicio, fin, box, pro, trat, paciente, creaFicha, avisos,
+        notas: [get("tratamiento"), get("notas"), IMPORT_MARK].filter(Boolean).join(" · "),
+      });
+    }
 
-      const notas = [get("tratamiento"), get("notas"), IMPORT_MARK].filter(Boolean).join(" · ");
-      const cita = {
-        patient_id: paciente.id,
-        professional_id: pro ? pro.id : null,
-        treatment_id: trat ? trat.id : null,
-        cabinet: box,
-        starts_at: inicio.toISOString(),
-        ends_at: fin.toISOString(),
+    if (!dryRun && porImportar.length) {
+      // 1) Fichas que faltan (una por paciente, aunque tenga varias citas).
+      const nuevosPorClave = new Map();
+      for (const p of porImportar) {
+        if (p.paciente) continue;
+        const k = norm(p.nombre);
+        if (!nuevosPorClave.has(k)) nuevosPorClave.set(k, { full_name: p.nombre, phone: p.tel || null, source: IMPORT_SOURCE });
+      }
+      const creados = new Map();
+      const aCrear = [...nuevosPorClave.values()];
+      for (let i = 0; i < aCrear.length; i += 200) {
+        const lote = aCrear.slice(i, i + 200);
+        let { data, error } = await supabase.from("df_patients").insert(lote).select("id, full_name, phone");
+        if (error && /source/i.test(error.message || "")) {
+          ({ data, error } = await supabase.from("df_patients")
+            .insert(lote.map(({ source, ...p }) => p)).select("id, full_name, phone"));
+        }
+        if (error) { erroneas += lote.length; continue; }
+        for (const p of data || []) { creados.set(norm(p.full_name), p); nuevas++; }
+      }
+      for (const p of porImportar) if (!p.paciente) p.paciente = creados.get(norm(p.nombre)) || null;
+
+      // 2) Las citas, en lotes.
+      const listas = porImportar.filter((p) => p.paciente);
+      erroneas += porImportar.length - listas.length;
+      const aInsertar = listas.map((p) => ({
+        patient_id: p.paciente.id,
+        professional_id: p.pro ? p.pro.id : null,
+        treatment_id: p.trat ? p.trat.id : null,
+        cabinet: p.box,
+        starts_at: p.inicio.toISOString(),
+        ends_at: p.fin.toISOString(),
         status: "confirmed",
         is_first_visit: false,
         source: IMPORT_SOURCE,
-        notes: notas,
-      };
-      let { error: errA } = await supabase.from("df_appointments").insert(cita);
-      if (errA && /source|check/i.test(errA.message || "")) {
-        // La base de datos aún no admite el origen 'import_cliniwin' (sql/importar-citas.sql
-        // sin ejecutar): se guarda como manual, reconocible por la nota.
-        ({ error: errA } = await supabase.from("df_appointments").insert({ ...cita, source: "manual" }));
+        notes: p.notas,
+      }));
+      for (let i = 0; i < aInsertar.length; i += 200) {
+        const lote = aInsertar.slice(i, i + 200);
+        let { error } = await supabase.from("df_appointments").insert(lote);
+        if (error && /source|check/i.test(error.message || "")) {
+          // La base de datos aún no admite el origen 'import_cliniwin'
+          // (sql/importar-citas.sql sin ejecutar): se guardan como manuales.
+          ({ error } = await supabase.from("df_appointments").insert(lote.map((c) => ({ ...c, source: "manual" }))));
+        }
+        if (error) { erroneas += lote.length; continue; }
+        importadas += lote.length;
       }
-      if (errA) { erroneas++; resultado.push({ ...fila, estado: "error", motivo: errA.message }); continue; }
-      importadas++;
-      resultado.push({
-        ...fila, estado: "ok",
-        paciente_crm: paciente.full_name,
-        profesional_crm: pro ? pro.name : "—",
-        tratamiento_crm: trat ? trat.name : "—",
-        cuando: inicio.toLocaleString("es-ES", { dateStyle: "short", timeStyle: "short" }),
-        motivo: avisos.join(" · "),
-      });
+      for (const p of listas) {
+        resultado.push({
+          ...p.fila, estado: "ok",
+          paciente_crm: p.paciente.full_name,
+          profesional_crm: p.pro ? p.pro.name : "—",
+          tratamiento_crm: p.trat ? p.trat.name : "—",
+          cuando: p.inicio.toLocaleString("es-ES", { dateStyle: "short", timeStyle: "short" }),
+          motivo: p.avisos.join(" · "),
+        });
+      }
     }
 
     return res.json({
       dryRun, total: resultado.length,
-      importadas, nuevasFichas: nuevas, duplicadas, erroneas,
+      importadas, nuevasFichas: nuevas, duplicadas, erroneas, choques,
       filas: resultado.slice(0, 500),
     });
   } catch (err) {

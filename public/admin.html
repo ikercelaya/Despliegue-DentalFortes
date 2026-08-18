@@ -1979,8 +1979,14 @@ function openImportarCitasModal() {
           <span><strong>${r.importadas}</strong> ${r.dryRun ? "se importarán" : "importadas"}</span>
           <span><strong>${r.nuevasFichas}</strong> ficha(s) de paciente nueva(s)</span>
           <span><strong>${r.duplicadas}</strong> ya estaban</span>
+          <span style="color:${r.choques ? "#8a6100" : "inherit"}"><strong>${r.choques || 0}</strong> chocan con citas del CRM</span>
           <span style="color:${r.erroneas ? "#b23a3a" : "inherit"}"><strong>${r.erroneas}</strong> con error</span>
-        </div>`;
+        </div>
+        ${r.choques ? `<div style="margin-top:8px;padding:9px 11px;border-radius:8px;background:rgba(234,179,8,.12);color:#8a6100;font-size:12.5px">
+          Hay <strong>${r.choques}</strong> cita(s) del archivo que pisan a otras que ya estaban en el CRM (las que se dieron
+          mientras la agenda antigua no estaba volcada). Se importan igual para no perderlas: búscalas abajo por el aviso
+          “choca con…”, míralas en la agenda y mueve la que toque con el lápiz.
+        </div>` : ""}`;
       document.getElementById("impTabla").innerHTML = `
         <table style="font-size:12.5px">
           <thead><tr><th>Línea</th><th>Cuándo</th><th>Paciente</th><th>Tratamiento</th><th>Profesional</th><th>Estado</th></tr></thead>
