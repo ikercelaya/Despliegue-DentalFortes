@@ -301,6 +301,13 @@ table tr.row-click { cursor: pointer; }
 .ag-hour { background: #fff; padding: 6px 7px 0; text-align: right; font-size: 10.5px; color: var(--text-3); font-variant-numeric: tabular-nums; position: sticky; left: 0; z-index: 4; }
 .ag-cell { background: #fff; min-height: 58px; padding: 3px; display: flex; flex-direction: column; gap: 3px; }
 .ag-daystart { box-shadow: inset 2px 0 0 var(--line-2); }
+/* Fila de BLOQUEOS: los profesionales que no vienen ese día. */
+.ag-off { background: #FDF2F2; min-height: 24px; display: flex; flex-wrap: wrap; gap: 4px; align-items: center;
+  justify-content: center; padding: 3px 5px; position: sticky; top: 56px; z-index: 5; }
+.ag-off.empty { background: #F7F9FD; }
+.ag-off-chip { border: 1px solid #E9B4B4; background: #fff; color: #B23A3A; border-radius: 999px;
+  font-size: 10.5px; font-weight: 700; padding: 2px 8px; cursor: pointer; line-height: 1.5; }
+.ag-off-chip:hover { background: #FBE9E9; }
 .ag-weeklabel { font-size: 13px; font-weight: 800; color: var(--text-2); padding: 4px 2px 8px; text-transform: capitalize; }
 /* Citas más altas y con la información completa (paciente · tratamiento · profesional). */
 .ag-cell .appt { min-height: 52px; padding: 5px 8px; font-size: 11.5px; }
@@ -1804,6 +1811,26 @@ function agendaApptChip(a) {
 }
 // Construye la rejilla de UNA tanda de días (cada día con 3 columnas: Box 1/2/3 por gabinete).
 const AG_NBOX = 3;
+// Profesionales BLOQUEADOS un día concreto (los que recepción marca en Profesionales →
+// Bloqueos). Se leen de la caché de profesionales, que trae sus rangos de ausencia.
+function bloqueosDelDia(fecha) {
+  const dia = `${fecha.getFullYear()}-${String(fecha.getMonth() + 1).padStart(2, "0")}-${String(fecha.getDate()).padStart(2, "0")}`;
+  const soloUno = agendaState.professionalId;
+  const fuera = [];
+  for (const p of cache.professionals || []) {
+    if (soloUno && p.id !== soloUno) continue;
+    for (const t of p.df_professional_time_off || []) {
+      const desde = String(t.start_date || "").slice(0, 10);
+      const hasta = String(t.end_date || desde).slice(0, 10);
+      if (desde && dia >= desde && dia <= hasta) {
+        fuera.push({ id: t.id, profId: p.id, nombre: p.name, nota: t.note || "", desde, hasta });
+        break;
+      }
+    }
+  }
+  return fuera;
+}
+
 function buildAgendaGrid(days, appts, range) {
   const { start, end, slots } = agendaSlots(range);
   const cells = days.map(() => Array.from({ length: AG_NBOX }, () => ({})));
@@ -1823,10 +1850,23 @@ function buildAgendaGrid(days, appts, range) {
   });
   days.forEach((_, di) => { for (let b = 0; b < AG_NBOX; b++) Object.values(cells[di][b]).forEach((l) => l.sort((x, y) => Date.parse(x.starts_at) - Date.parse(y.starts_at))); });
   const totalCols = days.length * AG_NBOX;
+  // Bloqueos de cada día: si hay alguno, la cabecera gana una fila para mostrarlos.
+  const bloqueos = days.map(bloqueosDelDia);
+  const hayBloqueos = bloqueos.some((b) => b.length);
   let html = `<div class="ag-grid" style="grid-template-columns:56px repeat(${totalCols}, minmax(116px, 1fr))">`;
-  html += `<div class="ag-corner" style="grid-row:1 / span 2; grid-column:1">Hora</div>`;
+  html += `<div class="ag-corner" style="grid-row:1 / span ${hayBloqueos ? 3 : 2}; grid-column:1">Hora</div>`;
   days.forEach((d) => { html += `<div class="ag-day" style="grid-column:span ${AG_NBOX}">${WEEKDAY_LABEL[(d.getDay() + 6) % 7]} ${d.getDate()}</div>`; });
   days.forEach(() => { for (let b = 1; b <= AG_NBOX; b++) html += `<div class="ag-box${b === 1 ? " ag-daystart" : ""}">Box ${b}</div>`; });
+  if (hayBloqueos) {
+    bloqueos.forEach((lista) => {
+      const chips = lista.map((b) => {
+        const rango = b.desde === b.hasta ? "" : ` (${b.desde.slice(8)}/${b.desde.slice(5, 7)} al ${b.hasta.slice(8)}/${b.hasta.slice(5, 7)})`;
+        const titulo = `${b.nombre} no viene este día${rango}${b.nota ? " · " + b.nota : ""}. Pulsa para quitar el bloqueo.`;
+        return `<button class="ag-off-chip" title="${escapeHtml(titulo)}" onclick="quitarBloqueoAgenda('${b.profId}','${b.id}','${escapeHtml(b.nombre)}')">🚫 ${escapeHtml(b.nombre.split(" ")[0])}</button>`;
+      }).join("");
+      html += `<div class="ag-off${lista.length ? "" : " empty"}" style="grid-column:span ${AG_NBOX}">${chips}</div>`;
+    });
+  }
   slots.forEach((m) => {
     html += `<div class="ag-hour">${slotLabel(m)}</div>`;
     days.forEach((_, di) => {
@@ -1938,6 +1978,17 @@ window.dismissCancellation = async function(id) {
     // Re-render de la agenda: refresca el aviso y hace desaparecer la cita cancelada del calendario.
     if (location.hash.replace(/^#/, "").split("/")[0] === "agenda") renderAgenda();
     else loadCancellations();
+  } catch (err) { toast(err.message, "error"); }
+};
+
+// Quitar un bloqueo desde la propia agenda (el mismo que se pone en Profesionales).
+window.quitarBloqueoAgenda = async function (profId, offId, nombre) {
+  if (!confirm(`¿Quitar el bloqueo de ${nombre}?\n\nVolverá a estar disponible ese día para dar citas.`)) return;
+  try {
+    await api(`/api/professionals/${profId}/timeoff/${offId}`, { method: "DELETE" });
+    await refreshProfessionalsCache();
+    toast(`${nombre} vuelve a estar disponible`, "success");
+    renderAgenda();
   } catch (err) { toast(err.message, "error"); }
 };
 
@@ -2231,6 +2282,9 @@ async function renderAgenda() {
   const googleDisconnectBtn = document.getElementById("googleDisconnectBtn");
   if (googleDisconnectBtn && selectedProfessional) googleDisconnectBtn.onclick = () => handleGoogleCalendarDisconnect(selectedProfessional);
 
+  // Los bloqueos de los profesionales se releen al pintar la agenda: si recepción
+  // acaba de poner (o quitar) uno, se ve al momento.
+  try { await refreshProfessionalsCache(); } catch (_e) {}
   try {
     let url = `/api/appointments?from=${fromD.toISOString()}&to=${toD.toISOString()}`;
     if (agendaState.professionalId) url += `&professional_id=${agendaState.professionalId}`;
