@@ -133,14 +133,19 @@ function buildTemplateComponents(input = {}) {
 
 // Mapeo de variables de una plantilla: qué representa cada {{n}} del cuerpo.
 // Se guarda en df_settings (clave tpl_vars:<nombre>) porque Meta no lo almacena.
-// map = [ { type: 'name'|'phone'|'address'|'treatment'|'fixed', value: '<texto fijo>' }, ... ]
-// (índice 0 = {{1}}). name/phone/address se rellenan con los datos de cada paciente.
-const TEMPLATE_VAR_TYPES = ["name", "phone", "address", "treatment", "fixed"];
+// map = [ { type: 'name'|'phone'|'address'|'treatment'|'appointment_date'|'today'|'fixed',
+//           value: '<texto fijo o de respaldo>' }, ... ]
+// (índice 0 = {{1}}). Se rellenan con los datos de cada paciente al enviar:
+//   appointment_date -> día y hora de su próxima cita (value = texto si no tiene ninguna)
+//   today            -> la fecha del día en que se envía
+const TEMPLATE_VAR_TYPES = ["name", "phone", "address", "treatment", "appointment_date", "today", "fixed"];
+// Tipos que además guardan un texto: el fijo y el de respaldo de la fecha de la cita.
+const TEMPLATE_VAR_WITH_VALUE = ["fixed", "appointment_date"];
 function normalizeVarMap(raw) {
   if (!Array.isArray(raw)) return [];
   return raw.map((v) => {
     const type = TEMPLATE_VAR_TYPES.includes(v && v.type) ? v.type : "fixed";
-    return { type, value: type === "fixed" ? String((v && v.value) || "") : "" };
+    return { type, value: TEMPLATE_VAR_WITH_VALUE.includes(type) ? String((v && v.value) || "") : "" };
   });
 }
 async function saveTemplateVarMap(name, rawMap) {
@@ -3262,6 +3267,41 @@ async function fetchApprovedTemplate(name) {
   };
 }
 
+// Fecha y hora de la PRÓXIMA cita de cada paciente, para las variables de tipo "fecha"
+// de las plantillas (p. ej. "le recordamos su cita del {{2}}"). Se consulta de una vez
+// para todos los destinatarios de la campaña.
+async function proximasCitasPorPaciente(patientIds) {
+  const mapa = new Map();
+  const ids = [...new Set((patientIds || []).filter(Boolean))];
+  if (!ids.length) return mapa;
+  try {
+    for (let i = 0; i < ids.length; i += 300) {
+      const lote = ids.slice(i, i + 300);
+      const { data } = await supabase
+        .from("df_appointments").select("patient_id, starts_at")
+        .in("patient_id", lote)
+        .in("status", ["pending", "confirmed"])
+        .gte("starts_at", new Date().toISOString())
+        .order("starts_at", { ascending: true });
+      for (const a of data || []) if (!mapa.has(a.patient_id)) mapa.set(a.patient_id, a.starts_at);
+    }
+  } catch (_e) { /* si falla, las variables de fecha quedan vacías */ }
+  return mapa;
+}
+function fmtFechaHoraCita(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return "";
+  return d.toLocaleString("es-ES", {
+    weekday: "long", day: "2-digit", month: "long", hour: "2-digit", minute: "2-digit", timeZone: "Europe/Madrid",
+  });
+}
+function fmtFechaHoy() {
+  return new Date().toLocaleDateString("es-ES", {
+    weekday: "long", day: "2-digit", month: "long", year: "numeric", timeZone: "Europe/Madrid",
+  });
+}
+
 // Lee el mapeo de variables guardado para una plantilla (df_settings tpl_vars:<nombre>).
 async function getTemplateVarMap(name) {
   if (!name) return [];
@@ -3417,6 +3457,9 @@ app.post("/api/campaigns/:id/send", requireAuth, requireReception, async (req, r
         if (tr && tr.name) campaignTreatment = tr.name;
       }
     } catch (_e) { /* usa el genérico */ }
+    // Fechas de la próxima cita de cada paciente (variables de tipo "fecha").
+    const usaFechaCita = (varMap || []).some((m) => m && m.type === "appointment_date");
+    let citasPorPaciente = new Map();
     // Construye los valores de {{1}}, {{2}}, … para un paciente, según el mapeo.
     const buildParams = (p) => {
       const firstName = String(p.full_name || "").trim().split(/\s+/)[0] || "paciente";
@@ -3427,6 +3470,8 @@ app.post("/api/campaigns/:id/send", requireAuth, requireReception, async (req, r
         else if (m.type === "phone") out.push(String(p.phone || "").replace(/^\+?34/, "") || "-");
         else if (m.type === "address") out.push(String(p.address || p.notes || "").trim() || "-");
         else if (m.type === "treatment") out.push(campaignTreatment);
+        else if (m.type === "appointment_date") out.push(fmtFechaHoraCita(citasPorPaciente.get(p.id)) || (m.value || "su próxima cita"));
+        else if (m.type === "today") out.push(fmtFechaHoy());
         else if (m.type === "fixed") out.push(m.value || tplInfo.bodyExamples[i] || "-");
         // Sin mapeo: {{1}} = nombre por defecto; el resto, el valor de ejemplo de Meta.
         else out.push(i === 0 ? firstName : (tplInfo.bodyExamples[i] || "-"));
@@ -3481,6 +3526,7 @@ app.post("/api/campaigns/:id/send", requireAuth, requireReception, async (req, r
       });
     }
     const batch = pending.slice(0, cupoSemana);
+    if (usaFechaCita) citasPorPaciente = await proximasCitasPorPaciente(batch.map((p) => p.id));
 
     let sent = 0, failed = 0, lastError = null;
     for (let i = 0; i < batch.length; i += CONCURRENCY) {
@@ -3558,6 +3604,9 @@ app.post("/api/campaigns/:id/send-email", requireAuth, requireReception, async (
       }
     } catch (_e) {}
 
+    // Fechas de la próxima cita de cada paciente (variables de tipo "fecha").
+    const usaFechaCita = (varMap || []).some((m) => m && m.type === "appointment_date");
+    let citasPorPaciente = new Map();
     // Sustituye {{1}}, {{2}}… por los datos de cada paciente (mismo mapeo que WhatsApp).
     const renderFor = (p) => {
       const firstName = String(p.full_name || "").trim().split(/\s+/)[0] || "paciente";
@@ -3567,6 +3616,8 @@ app.post("/api/campaigns/:id/send-email", requireAuth, requireReception, async (
         if (m.type === "phone") return String(p.phone || "").replace(/^\+?34/, "") || "-";
         if (m.type === "address") return String(p.address || p.notes || "").trim() || "-";
         if (m.type === "treatment") return campaignTreatment;
+        if (m.type === "appointment_date") return fmtFechaHoraCita(citasPorPaciente.get(p.id)) || (m.value || "su próxima cita");
+        if (m.type === "today") return fmtFechaHoy();
         if (m.type === "fixed") return m.value || tplInfo.bodyExamples[Number(n) - 1] || "-";
         return Number(n) === 1 ? firstName : (tplInfo.bodyExamples[Number(n) - 1] || "-");
       });
@@ -3595,6 +3646,8 @@ app.post("/api/campaigns/:id/send-email", requireAuth, requireReception, async (
     if (!pending.length) {
       return res.json({ sent: 0, failed: 0, remaining: 0, totalEligible: eligible.length, alreadyAll: true, done: true, channel: "email" });
     }
+
+    if (usaFechaCita) citasPorPaciente = await proximasCitasPorPaciente(pending.map((p) => p.id));
 
     const subject = String(req.body?.subject || campaign.name || "Dental Fortes").slice(0, 200);
     let sent = 0, failed = 0, lastError = null;

@@ -3569,7 +3569,11 @@ function openEditTemplateModal(key) {
           if (!input) return;
           input.placeholder = def.placeholder || "";
           input.title = def.hint || "";
-          if (def.key !== "fixed" && !input.value.trim() && def.example) input.value = def.example;
+          // Igual que al crear: el ejemplo se cambia si el campo está vacío o si aún
+          // tiene el del tipo anterior.
+          const puesto = input.dataset.autoEjemplo || "";
+          if (!input.value.trim() || input.value.trim() === puesto) input.value = def.example || "";
+          input.dataset.autoEjemplo = def.example || "";
         };
         sel.addEventListener("change", applyType);
         applyType();
@@ -3598,7 +3602,9 @@ function openEditTemplateModal(key) {
           .sort((a, b) => Number(a.dataset.n) - Number(b.dataset.n))
           .map((s) => {
             const val = (body.querySelector(`.tpl-var-val[data-n="${s.dataset.n}"]`) || {}).value || "";
-            return { type: s.value, value: s.value === "fixed" ? val.trim() : "" };
+            // El texto de al lado se guarda para "Texto fijo" (lo que se envía siempre) y
+            // para "Fecha de su cita" (lo que se pone si el paciente no tiene ninguna).
+            return { type: s.value, value: ["fixed", "appointment_date"].includes(s.value) ? val.trim() : "" };
           });
         await api(`/api/marketing/templates/${encodeURIComponent(t.id)}/edit`, { method: "POST", body: {
           name: t.name,
@@ -4317,6 +4323,8 @@ const TPL_VAR_TYPES = [
   { key: "phone",     label: "Teléfono",            example: "600123456",          placeholder: "Ejemplo para Meta (p. ej. 600123456)",    hint: "Se enviará el teléfono de la ficha del paciente." },
   { key: "address",   label: "Dirección",           example: "C/ Mayor 1, Sant Boi", placeholder: "Ejemplo para Meta (p. ej. C/ Mayor 1)", hint: "Se enviará la dirección de la ficha del paciente." },
   { key: "treatment", label: "Tratamiento",         example: "Limpieza dental",    placeholder: "Ejemplo para Meta (p. ej. Limpieza)",     hint: "Se enviará el tratamiento de la campaña." },
+  { key: "appointment_date", label: "Fecha de su cita", example: "lunes, 24 de agosto, 10:30", placeholder: "Ejemplo para Meta (p. ej. lunes, 24 de agosto, 10:30)", hint: "Se enviará el día y la hora de la próxima cita de cada paciente. Si no tiene ninguna, se envía el texto que escribas al lado." },
+  { key: "today",     label: "Fecha de hoy",        example: "24 de agosto de 2026", placeholder: "Ejemplo para Meta (p. ej. 24 de agosto de 2026)", hint: "Se enviará la fecha del día en que se envíe la campaña." },
   { key: "fixed",     label: "Texto fijo",          example: "",                   placeholder: "Texto que se enviará siempre",            hint: "Se enviará este texto tal cual." },
 ];
 
@@ -4439,12 +4447,16 @@ function openMetaTemplateModal() {
       if (!input) return;
       const def = TPL_VAR_TYPES.find(t => t.key === sel.value) || {};
       input.placeholder = def.placeholder || `Valor de ejemplo para {{${n}}}`;
-      if (def.key === "fixed") {
-        input.title = "Este texto es el que se enviará tal cual a todos los pacientes.";
-      } else {
-        input.title = def.hint || "";
-        if (!input.value.trim() && def.example) input.value = def.example;
+      input.title = def.key === "fixed"
+        ? "Este texto es el que se enviará tal cual a todos los pacientes."
+        : (def.hint || "");
+      // El ejemplo se propone solo si el campo está vacío o si aún tiene el ejemplo del
+      // tipo anterior (al cambiar de tipo no debe quedarse una dirección en una fecha).
+      const puesto = input.dataset.autoEjemplo || "";
+      if (!input.value.trim() || input.value.trim() === puesto) {
+        input.value = def.example || "";
       }
+      input.dataset.autoEjemplo = def.example || "";
     }
     tplBody.addEventListener("input", syncVarRows);
     syncVarRows();
@@ -4466,7 +4478,9 @@ function openMetaTemplateModal() {
           .sort((a, b) => Number(a.dataset.n) - Number(b.dataset.n))
           .map((s) => {
             const val = (body.querySelector(`.tpl-var-val[data-n="${s.dataset.n}"]`) || {}).value || "";
-            return { type: s.value, value: s.value === "fixed" ? val.trim() : "" };
+            // El texto de al lado se guarda para "Texto fijo" (lo que se envía siempre) y
+            // para "Fecha de su cita" (lo que se pone si el paciente no tiene ninguna).
+            return { type: s.value, value: ["fixed", "appointment_date"].includes(s.value) ? val.trim() : "" };
           });
         const data = await api("/api/marketing/templates", { method: "POST", body: {
           var_map: varMap,
