@@ -1684,6 +1684,21 @@ function confirmToken(id) {
 function confirmLink(id) {
   return `${PUBLIC_URL}/api/appointments/${id}/confirm?t=${confirmToken(id)}`;
 }
+// Enlace CORTO para el botón "Confirmar mi cita" de las plantillas de WhatsApp: Meta
+// solo deja añadir un trozo al final de una URL fija, así que la base es /c/ y el
+// trozo variable es "<id>~<token>".
+const CONFIRM_BUTTON_BASE = `${PUBLIC_URL}/c/`;
+function confirmButtonParam(id) {
+  return `${id}~${confirmToken(id)}`;
+}
+app.get("/c/:payload", (req, res) => {
+  const [id, token] = String(req.params.payload || "").split("~");
+  if (!id || !token) {
+    res.set("Content-Type", "text/html; charset=utf-8");
+    return res.status(400).send(confirmPage("Enlace no válido."));
+  }
+  return res.redirect(302, `/api/appointments/${encodeURIComponent(id)}/confirm?t=${encodeURIComponent(token)}`);
+});
 function confirmPage(message) {
   return `<!doctype html><html lang="es"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -1744,13 +1759,17 @@ async function getReminderConfig() {
     const { data } = await supabase.from("df_settings").select("value").eq("key", "reminder_cadence").maybeSingle();
     const val = (data && data.value) || {};
     const template = typeof val.template === "string" ? val.template : "";
+    // Una plantilla por recordatorio. Si solo hay la antigua (una para los tres), se
+    // usa esa en los tres tramos para no cambiar lo que ya estaba configurado.
+    const lista = Array.isArray(val.templates) ? val.templates : [];
+    const templates = [0, 1, 2].map((i) => (typeof lista[i] === "string" ? lista[i] : template) || "");
     let offs = val.offsets;
     if (Array.isArray(offs) && offs.length === 3 && offs.every((n) => Number(n) > 0)) {
-      return { offsets: offs.map(Number).sort((a, b) => b - a), template };
+      return { offsets: offs.map(Number).sort((a, b) => b - a), template, templates };
     }
-    return { offsets: DEFAULT_REMINDER_OFFSETS.slice(), template };
+    return { offsets: DEFAULT_REMINDER_OFFSETS.slice(), template, templates };
   } catch (_e) {}
-  return { offsets: DEFAULT_REMINDER_OFFSETS.slice(), template: "" };
+  return { offsets: DEFAULT_REMINDER_OFFSETS.slice(), template: "", templates: ["", "", ""] };
 }
 
 // Tramos [{field, fromH, toH, label}] a partir de los offsets (horas antes de la cita).
@@ -1782,7 +1801,11 @@ async function sendReminderMessage(wa, phone, appt, templateName, tplInfo) {
       weekday: "long", day: "2-digit", month: "long", hour: "2-digit", minute: "2-digit", timeZone: "Europe/Madrid",
     });
     const params = [nombre, cuando].slice(0, tplInfo.bodyVarCount);
-    return wa.sendTemplate(phone, templateName, tplInfo.language, params);
+    // Si la plantilla lleva el botón "Confirmar mi cita", se le pasa el enlace de ESTA cita.
+    const boton = tplInfo.urlButtonIndex != null
+      ? { index: tplInfo.urlButtonIndex, param: confirmButtonParam(appt.id) }
+      : null;
+    return wa.sendTemplate(phone, templateName, tplInfo.language, params, boton);
   }
   return wa.sendText(phone, reminderText(appt));
 }
@@ -1793,16 +1816,22 @@ async function runReminders() {
   const iso = (h) => new Date(now + h * 3600000).toISOString();
   const result = { sent: 0, cancelled: 0, processed: 0, errors: [], autoCancelEnabled: AUTO_CANCEL_ENABLED };
 
-  const { offsets, template } = await getReminderConfig();
+  const { offsets, templates } = await getReminderConfig();
   const steps = buildReminderSteps(offsets);
-  // Si hay una plantilla de Meta configurada, cargamos sus datos UNA vez (idioma y nº de
-  // variables) para enviar los recordatorios como plantilla (necesario fuera de la ventana
-  // de 24h). Si falla o no hay plantilla, se cae al texto normal.
-  let remTpl = null;
-  if (template && wa.isConfigured()) { try { remTpl = await fetchApprovedTemplate(template); } catch (_e) { remTpl = null; } }
+  // Cada recordatorio puede tener SU plantilla (el aviso de 6 h es más contundente que
+  // el de 3 días). Se cargan una sola vez sus datos (idioma, nº de variables y si llevan
+  // botón de confirmar). Si una falla o no está puesta, ese tramo va como texto normal.
+  const infoPlantilla = {};
+  if (wa.isConfigured()) {
+    for (const nombre of [...new Set(templates.filter(Boolean))]) {
+      try { infoPlantilla[nombre] = await fetchApprovedTemplate(nombre); } catch (_e) { infoPlantilla[nombre] = null; }
+    }
+  }
 
   // 1) Recordatorios por cada tramo de la cadencia.
-  for (const step of steps) {
+  for (const [iPaso, step] of steps.entries()) {
+    const plantillaPaso = templates[iPaso] || "";
+    const infoPaso = plantillaPaso ? infoPlantilla[plantillaPaso] : null;
     const { data: appts } = await supabase
       .from("df_appointments")
       .select("id, starts_at, status, df_patients(full_name, phone)")
@@ -1817,7 +1846,7 @@ async function runReminders() {
       try {
         // Solo tiene sentido recordar las que aún están pendientes de confirmar.
         if (a.status !== "confirmed" && phone && wa.isConfigured()) {
-          await sendReminderMessage(wa, phone, a, template, remTpl);
+          await sendReminderMessage(wa, phone, a, plantillaPaso, infoPaso);
           result.sent++;
           sent = true;
         }
@@ -1909,10 +1938,12 @@ app.put("/api/reminders/config", requireAuth, requireReception, async (req, res)
     if (offsets.length !== 3) return res.status(400).json({ error: "Indica 3 valores (en horas) mayores que 0." });
     offsets.sort((a, b) => b - a);
     const template = typeof req.body.template === "string" ? req.body.template.trim() : "";
+    const recibidas = Array.isArray(req.body.templates) ? req.body.templates : [];
+    const templates = [0, 1, 2].map((i) => (typeof recibidas[i] === "string" ? recibidas[i].trim() : template) || "");
     const { error } = await supabase.from("df_settings")
-      .upsert({ key: "reminder_cadence", value: { offsets, template }, updated_at: new Date().toISOString() }, { onConflict: "key" });
+      .upsert({ key: "reminder_cadence", value: { offsets, template, templates }, updated_at: new Date().toISOString() }, { onConflict: "key" });
     if (error) throw error;
-    return res.json({ offsets, template });
+    return res.json({ offsets, template, templates });
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
@@ -1930,8 +1961,17 @@ app.post("/api/appointments/:id/send-reminder", requireAuth, async (req, res) =>
     const phone = a.df_patients && a.df_patients.phone;
     if (!phone) return res.status(400).json({ error: "El paciente no tiene teléfono en su ficha." });
     if (!wa.isConfigured()) return res.status(400).json({ error: "WhatsApp no está configurado (falta token o número de teléfono)." });
+    // Se usa la plantilla del tramo que corresponda a lo que falta para la cita: fuera de
+    // la ventana de 24 h, WhatsApp NO deja mandar texto libre y solo pasa la plantilla.
+    const { offsets, templates } = await getReminderConfig();
+    const faltanH = (Date.parse(a.starts_at) - Date.now()) / 3600000;
+    let iPaso = offsets.findIndex((h, i) => faltanH <= h && faltanH > (offsets[i + 1] || 0));
+    if (iPaso < 0) iPaso = faltanH > offsets[0] ? 0 : offsets.length - 1;
+    const nombreTpl = templates[iPaso] || "";
+    let infoTpl = null;
+    if (nombreTpl) { try { infoTpl = await fetchApprovedTemplate(nombreTpl); } catch (_e) { infoTpl = null; } }
     try {
-      await wa.sendText(phone, reminderText(a));
+      await sendReminderMessage(wa, phone, a, nombreTpl, infoTpl);
     } catch (e) {
       return res.status(502).json({ error: "No se pudo enviar por WhatsApp: " + e.message });
     }
@@ -3210,10 +3250,15 @@ async function fetchApprovedTemplate(name) {
   const bodyExamples = (body && body.example && body.example.body_text && body.example.body_text[0]) || [];
   const header = (tpl.components || []).find((c) => c.type === "HEADER" && (c.format === "TEXT" || !c.format));
   const footer = (tpl.components || []).find((c) => c.type === "FOOTER");
+  // Botón de enlace DINÁMICO (el de "Confirmar mi cita"): Meta lo define con {{1}} al
+  // final de la URL y hay que mandarle el trozo que falta en cada envío.
+  const botones = ((tpl.components || []).find((c) => c.type === "BUTTONS") || {}).buttons || [];
+  const iUrlDinamico = botones.findIndex((b) => b.type === "URL" && /\{\{\s*\d+\s*\}\}/.test(b.url || ""));
   return {
     language: tpl.language, bodyVarCount, bodyExamples,
     // Textos, para poder reutilizar la misma plantilla en el envío por correo.
     bodyText: body?.text || "", headerText: header?.text || "", footerText: footer?.text || "",
+    urlButtonIndex: iUrlDinamico >= 0 ? iUrlDinamico : null,
   };
 }
 

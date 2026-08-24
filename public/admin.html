@@ -1520,49 +1520,63 @@ function offsetToUnit(h) { // devuelve {val, unit} para la UI
   return { val: h, unit: "horas" };
 }
 async function openReminderConfigModal() {
-  let offs = [72, 24, 6]; let curTemplate = "";
-  try { const c = await api("/api/reminders/config"); if (c.offsets) offs = c.offsets; curTemplate = c.template || ""; } catch (_e) {}
-  // Plantillas de Meta disponibles (apartado Marketing) para elegir la del recordatorio.
+  let offs = [72, 24, 6]; let curTemplates = ["", "", ""];
+  try {
+    const c = await api("/api/reminders/config");
+    if (c.offsets) offs = c.offsets;
+    curTemplates = [0, 1, 2].map(i => (c.templates && c.templates[i]) || c.template || "");
+  } catch (_e) {}
+  // Plantillas de Meta disponibles (apartado Marketing) para elegir la de CADA recordatorio.
   let templates = [], tplConfigured = true;
   try { const r = await api("/api/marketing/templates"); templates = r.templates || []; tplConfigured = r.configured !== false; } catch (_e) { tplConfigured = false; }
+  const st = { APPROVED: "Aprobada", PENDING: "En revisión", REJECTED: "Rechazada", PAUSED: "Pausada", DISABLED: "Deshabilitada" };
+  const tplOptions = (sel) => `<option value="">— Texto normal (sin plantilla) —</option>` +
+    templates.map(t => `<option value="${escapeHtml(t.name)}" ${t.name === sel ? "selected" : ""}>${escapeHtml(t.name)} · ${st[t.status] || t.status || ""}</option>`).join("");
+  // Cada recordatorio, con su cuándo y su plantilla propia (el aviso de 6 h puede ser
+  // bastante más contundente que el de 3 días).
   const rows = offs.map((h, i) => {
     const u = offsetToUnit(h);
-    return `<div class="row" style="align-items:end">
-      <div class="field"><label>${i + 1}º recordatorio · valor</label>
-        <input class="input" type="number" min="1" id="remVal${i}" value="${u.val}" /></div>
-      <div class="field"><label>Unidad</label>
-        <select class="select" id="remUnit${i}">
-          <option value="dias" ${u.unit === "dias" ? "selected" : ""}>Días antes</option>
-          <option value="horas" ${u.unit === "horas" ? "selected" : ""}>Horas antes</option>
-        </select></div>
+    return `<div style="border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin-bottom:12px">
+      <div style="font-weight:700;font-size:12.5px;color:var(--text-2);margin-bottom:10px">${i + 1}º recordatorio</div>
+      <div class="row" style="align-items:end">
+        <div class="field"><label>Cuánto antes</label>
+          <input class="input" type="number" min="1" id="remVal${i}" value="${u.val}" /></div>
+        <div class="field"><label>Unidad</label>
+          <select class="select" id="remUnit${i}">
+            <option value="dias" ${u.unit === "dias" ? "selected" : ""}>Días antes</option>
+            <option value="horas" ${u.unit === "horas" ? "selected" : ""}>Horas antes</option>
+          </select></div>
+      </div>
+      <div class="row single" style="margin-bottom:0"><div class="field"><label>Plantilla de WhatsApp de este recordatorio</label>
+        <select class="select" id="remTemplate${i}">${tplOptions(curTemplates[i])}</select>
+      </div></div>
     </div>`;
   }).join("");
-  const st = { APPROVED: "Aprobada", PENDING: "En revisión", REJECTED: "Rechazada", PAUSED: "Pausada", DISABLED: "Deshabilitada" };
-  const tplOptions = `<option value="">— Texto normal (sin plantilla) —</option>` +
-    templates.map(t => `<option value="${escapeHtml(t.name)}" ${t.name === curTemplate ? "selected" : ""}>${escapeHtml(t.name)} · ${st[t.status] || t.status || ""}</option>`).join("");
   openModal(`
     <h3>Configurar recordatorios</h3>
-    <p class="mini-note" style="margin:-4px 0 14px">Cuándo enviará el bot cada uno de los 3 recordatorios (antes de la cita). Se ordenan del más lejano al más cercano.</p>
+    <p class="mini-note" style="margin:-4px 0 14px">Cuándo enviará el bot cada uno de los 3 recordatorios y con qué plantilla.
+    Se ordenan del más lejano al más cercano y se envían hasta que el paciente confirme la cita.</p>
     ${rows}
-    <div class="row single"><div class="field"><label>Plantilla de WhatsApp para los recordatorios</label>
-      <select class="select" id="remTemplate">${tplOptions}</select>
-      <small style="color:var(--text-3)">${tplConfigured ? "Elige entre tus plantillas aprobadas en Meta. Se rellena {{1}} con el nombre y {{2}} con la fecha/hora de la cita. Sin plantilla, se envía el texto normal." : "Conecta WhatsApp para ver tus plantillas de Meta."}</small>
-    </div></div>
+    <small style="color:var(--text-3);display:block;margin:-2px 0 4px">${tplConfigured
+      ? "En cada plantilla se rellena {{1}} con el nombre del paciente y {{2}} con la fecha y hora de su cita. Si lleva botón de enlace, se le pone el de confirmar esa cita. Sin plantilla, se envía el texto normal."
+      : "Conecta WhatsApp para ver tus plantillas de Meta."}</small>
     <div class="actions">
       <button class="btn" onclick="closeModal()">Cancelar</button>
       <button class="btn primary" id="saveRemCfg">Guardar</button>
     </div>
   `, { onMount: (body) => {
     body.querySelector("#saveRemCfg").onclick = async () => {
-      const offsets = [0, 1, 2].map(i => {
-        const val = Number(body.querySelector(`#remVal${i}`).value) || 0;
-        const unit = body.querySelector(`#remUnit${i}`).value;
-        return unit === "dias" ? val * 24 : val;
-      });
-      if (offsets.some(h => h <= 0)) { toast("Los valores deben ser mayores que 0", "error"); return; }
+      const pasos = [0, 1, 2].map(i => ({
+        h: (body.querySelector(`#remUnit${i}`).value === "dias" ? 24 : 1) * (Number(body.querySelector(`#remVal${i}`).value) || 0),
+        tpl: body.querySelector(`#remTemplate${i}`).value,
+      }));
+      if (pasos.some(p => p.h <= 0)) { toast("Los valores deben ser mayores que 0", "error"); return; }
+      // El servidor ordena del más lejano al más cercano: se manda cada plantilla con su
+      // tramo para que no se descoloquen si se cambian los tiempos.
+      pasos.sort((a, b) => b.h - a.h);
       try {
-        await api("/api/reminders/config", { method: "PUT", body: { offsets, template: body.querySelector("#remTemplate").value } });
-        toast("Cadencia guardada", "success");
+        await api("/api/reminders/config", { method: "PUT", body: { offsets: pasos.map(p => p.h), templates: pasos.map(p => p.tpl) } });
+        toast("Recordatorios guardados", "success");
         closeModal(); renderReminders();
       } catch (err) { toast(err.message, "error"); }
     };
