@@ -2838,8 +2838,11 @@ app.post("/api/campaigns", requireAuth, requireReception, async (req, res) => {
       manual_patient_ids: Array.isArray(b.manual_patient_ids) ? b.manual_patient_ids : (baseConfig.manual_patient_ids || []),
       custom_segments: customSegments,
       template_name: templateName,
-      // "all" solo para la campaña que pide el consentimiento; el resto, "consented".
-      audience: b.audience === "all" ? "all" : "consented",
+      // Las campañas van SIEMPRE solo a quien aceptó recibir comunicaciones. Llegar a
+      // los demás queda reservado a las plantillas de SERVICIO (consentimiento, aviso
+      // de número), que se reconocen por su nombre en campaignAudience(): así no se
+      // puede montar un envío masivo a todo el padrón desde el panel ni desde fuera.
+      audience: "consented",
     };
 
     const { data, error } = await supabase
@@ -3091,8 +3094,9 @@ function isServiceTemplate(name) {
 function campaignAudience(campaign) {
   const cfg = (campaign && campaign.segment_config) || {};
   const tplName = cfg.template_name || (campaign && campaign.message_template) || "";
-  if (isServiceTemplate(tplName)) return "all";
-  return cfg.audience === "all" ? "all" : "consented";
+  // SOLO las plantillas de servicio llegan a quien todavía no ha aceptado. Una campaña
+  // normal nunca, aunque una campaña antigua tenga guardado audience: "all".
+  return isServiceTemplate(tplName) ? "all" : "consented";
 }
 
 function campaignSegmentInput(campaign) {
@@ -3496,7 +3500,7 @@ app.post("/api/campaigns/:id/send", requireAuth, requireReception, async (req, r
       return res.status(400).json({
         error: conTelefono.length === 0
           ? "Ningún paciente del segmento tiene un teléfono válido para enviar por WhatsApp."
-          : `Ninguno de los ${conTelefono.length} paciente(s) del segmento ha aceptado recibir comunicaciones comerciales, así que no se puede enviar. Envía primero la campaña de consentimiento (marcando la casilla "campaña de consentimiento") y espera a que acepten.`,
+          : `Ninguno de los ${conTelefono.length} paciente(s) del segmento ha aceptado recibir comunicaciones comerciales, así que no se puede enviar. El consentimiento se les pide solo cuando reservan una cita con el asistente; hasta que acepten no se les puede escribir.`,
       });
     }
 
@@ -3528,9 +3532,16 @@ app.post("/api/campaigns/:id/send", requireAuth, requireReception, async (req, r
     const batch = pending.slice(0, cupoSemana);
     if (usaFechaCita) citasPorPaciente = await proximasCitasPorPaciente(batch.map((p) => p.id));
 
-    let sent = 0, failed = 0, lastError = null;
+    let sent = 0, failed = 0, lastError = null, cortadoPorTope = false;
+    let cupoRestante = cupoSemana;
     for (let i = 0; i < batch.length; i += CONCURRENCY) {
-      const slice = batch.slice(i, i + CONCURRENCY);
+      // El cupo se REVISA antes de CADA tanda, no solo al empezar: si a la vez se está
+      // enviando otra campaña (o alguien pulsó dos veces), el tope de la semana se
+      // respeta igualmente y no se dispara el coste de WhatsApp.
+      if (i > 0) cupoRestante = Math.max(0, WEEKLY_TEMPLATE_LIMIT - (await templatesSentThisWeek()));
+      if (cupoRestante <= 0) { cortadoPorTope = true; break; }
+      const slice = batch.slice(i, i + Math.min(CONCURRENCY, cupoRestante));
+      cupoRestante -= slice.length;
       await Promise.all(slice.map(async (pt) => {
         const params = buildParams(pt);
         try {
@@ -3547,7 +3558,8 @@ app.post("/api/campaigns/:id/send", requireAuth, requireReception, async (req, r
       }));
     }
 
-    const remaining = Math.max(0, pending.length - batch.length);
+    const intentados = sent + failed;
+    const remaining = Math.max(0, pending.length - (cortadoPorTope ? intentados : batch.length));
     // Si ya no queda nadie por intentar, la campaña queda ENVIADA.
     if (remaining === 0) {
       await supabase.from("df_campaigns").update({ status: "sent", sent_at: new Date().toISOString() }).eq("id", campaign.id);
@@ -3560,7 +3572,7 @@ app.post("/api/campaigns/:id/send", requireAuth, requireReception, async (req, r
       // Tope semanal: si han quedado pendientes por el límite, se avisa.
       weeklyLimit: WEEKLY_TEMPLATE_LIMIT,
       sentThisWeek: enviadosSemana + sent,
-      limitReached: remaining > 0 && batch.length >= cupoSemana,
+      limitReached: remaining > 0 && (cortadoPorTope || batch.length >= cupoSemana),
       error_detail: failed && !sent ? lastError : undefined,
       done: remaining === 0,
     });
