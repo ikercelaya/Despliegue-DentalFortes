@@ -28,6 +28,9 @@ function madridWeekdayAndTime(iso) {
   return { weekday: WD[m.weekday], hhmm: `${hh}:${m.minute}` };
 }
 const { ensurePaymentForAppointment, clearPendingPaymentForAppointment } = require("./lib/billing");
+// Las dos confirmaciones de una cita: la de recepción (status) y la de asistencia del
+// paciente (patient_confirmed_at). Ver lib/citas.js.
+const { updateAppointment, marcarAsistencia, RESET_AL_MOVER } = require("./lib/citas");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -1229,7 +1232,11 @@ app.post("/api/appointments", requireAuth, async (req, res) => {
       cabinet = cap.cabinet; // usa el gabinete validado (respeta el elegido si estaba libre)
     }
 
-    const status = body.status || "pending";
+    // Una cita creada A MANO en el CRM la está metiendo recepción mirando la agenda: ya
+    // está validada, así que nace CONFIRMADA (verde con un tick). Las que agenda el bot
+    // entran por otro camino (lib/bot.js) y nacen 'pending' hasta que recepción las
+    // revise. Se puede forzar otro estado mandando body.status.
+    const status = body.status || "confirmed";
     const { data, error } = await supabase
       .from("df_appointments")
       .insert({
@@ -1320,16 +1327,20 @@ app.patch("/api/appointments/:id", requireAuth, async (req, res) => {
       }
     }
 
-    // Confirmación: al pasar a 'confirmed' sella la fecha; al reabrir a 'pending' la limpia.
+    // Confirmación de RECEPCIÓN: al pasar a 'confirmed' sella la fecha; al reabrir a
+    // 'pending' la limpia. La confirmación de asistencia del paciente es otra cosa y
+    // no se toca aquí (ver lib/citas.js).
     if (patch.status === "confirmed") patch.confirmed_at = new Date().toISOString();
     else if (patch.status === "pending") patch.confirmed_at = null;
 
-    const { data, error } = await supabase
-      .from("df_appointments")
-      .update(patch)
-      .eq("id", req.params.id)
-      .select()
-      .single();
+    // Si la cita se MUEVE de día/hora, lo que el paciente había confirmado era otro
+    // momento: su confirmación de asistencia deja de valer y la cadencia de
+    // recordatorios vuelve a empezar sobre el hueco nuevo.
+    const seMueve = "starts_at" in patch &&
+      Date.parse(patch.starts_at) !== Date.parse(before.starts_at);
+    if (seMueve) Object.assign(patch, RESET_AL_MOVER);
+
+    const { data, error } = await updateAppointment(supabase, req.params.id, patch);
     if (error) throw error;
 
     // El cobro sigue el estado de la cita:
@@ -1725,7 +1736,7 @@ app.get("/api/appointments/:id/confirm", async (req, res) => {
     const valid = gotBuf.length === expBuf.length && crypto.timingSafeEqual(gotBuf, expBuf);
     if (!valid) return res.status(403).send(confirmPage("Enlace no válido."));
     const { data: appt } = await supabase
-      .from("df_appointments").select("id, status").eq("id", id).maybeSingle();
+      .from("df_appointments").select("*").eq("id", id).maybeSingle();
     if (!appt) return res.status(404).send(confirmPage("No hemos encontrado la cita."));
     if (appt.status === "cancelled") {
       return res.status(200).send(confirmPage("Esta cita estaba cancelada. Por favor, contacte con la clínica."));
@@ -1734,14 +1745,16 @@ app.get("/api/appointments/:id/confirm", async (req, res) => {
       // 'done' / 'no_show': ya no tiene sentido confirmarla.
       return res.status(200).send(confirmPage("Esta cita ya no está activa. Si necesita algo, contacte con la clínica."));
     }
-    if (appt.status === "confirmed") {
-      return res.status(200).send(confirmPage("Su cita ya estaba confirmada. ¡Le esperamos!"));
-    }
-    const { error: updateError } = await supabase.from("df_appointments")
-      .update({ status: "confirmed", confirmed_at: new Date().toISOString() }).eq("id", id);
+    // Quien pulsa este enlace es el PACIENTE desde su recordatorio: lo que confirma es
+    // que va a acudir, no el estado de la cita (eso lo valida recepción). Con la
+    // asistencia confirmada dejan de enviársele recordatorios.
+    const { yaEstaba, error: updateError } = await marcarAsistencia(supabase, appt);
     if (updateError) throw updateError;
+    if (yaEstaba) {
+      return res.status(200).send(confirmPage("Ya nos había confirmado su asistencia. ¡Le esperamos!"));
+    }
     await syncAppointmentToGoogle(id).catch((e) => console.error("[google-calendar/confirm]", e.message));
-    return res.status(200).send(confirmPage("¡Gracias! Su cita ha quedado confirmada."));
+    return res.status(200).send(confirmPage("¡Gracias! Hemos anotado que vendrá a su cita."));
   } catch (err) {
     console.error("[confirm]", err);
     return res.status(500).send(confirmPage("No se ha podido confirmar ahora mismo. Inténtelo más tarde."));
@@ -1793,8 +1806,8 @@ function reminderText(appt, _label) {
   });
   const nombre = appt.df_patients?.full_name ? " " + String(appt.df_patients.full_name).split(" ")[0] : "";
   return `Hola${nombre}, le recordamos su cita en Dental Fortes el ${cuando}. ` +
-    `Por favor, confírmela para mantenerla: ${confirmLink(appt.id)} ` +
-    `Si no se confirma, el hueco podría liberarse. Gracias.`;
+    `Por favor, confírmenos que va a venir: ${confirmLink(appt.id)} ` +
+    `Si no la confirma, el hueco podría liberarse. Gracias.`;
 }
 
 // Envía el recordatorio de una cita: por PLANTILLA de Meta si hay una configurada (rellena
@@ -1813,6 +1826,25 @@ async function sendReminderMessage(wa, phone, appt, templateName, tplInfo) {
     return wa.sendTemplate(phone, templateName, tplInfo.language, params, boton);
   }
   return wa.sendText(phone, reminderText(appt));
+}
+
+// Citas activas de un tramo de la cadencia a las que aún no se ha mandado ese aviso.
+// Se piden con "*" (y no columna a columna) para que siga funcionando aunque todavía no
+// se haya ejecutado sql/confirmacion-asistencia.sql: si patient_confirmed_at no existe,
+// llega undefined y la cadencia se comporta como antes.
+async function citasDelTramo(step, iso) {
+  const { data, error } = await supabase
+    .from("df_appointments")
+    .select("*, df_patients(full_name, phone)")
+    .in("status", ["pending", "confirmed"])
+    .is(step.field, null)
+    .gt("starts_at", iso(step.fromH))
+    .lte("starts_at", iso(step.toH));
+  if (error) {
+    console.error("[reminders/tramo]", step.field, error.message);
+    return [];
+  }
+  return data || [];
 }
 
 async function runReminders() {
@@ -1834,23 +1866,22 @@ async function runReminders() {
   }
 
   // 1) Recordatorios por cada tramo de la cadencia.
+  //    Lo que corta la cadencia es que el PACIENTE confirme su asistencia, no que
+  //    recepción haya validado la cita: son dos confirmaciones distintas (lib/citas.js).
+  //    Si no fuera así, las citas que recepción crea a mano —que nacen confirmadas—
+  //    no recibirían nunca ningún recordatorio.
   for (const [iPaso, step] of steps.entries()) {
     const plantillaPaso = templates[iPaso] || "";
     const infoPaso = plantillaPaso ? infoPlantilla[plantillaPaso] : null;
-    const { data: appts } = await supabase
-      .from("df_appointments")
-      .select("id, starts_at, status, df_patients(full_name, phone)")
-      .in("status", ["pending", "confirmed"])
-      .is(step.field, null)
-      .gt("starts_at", iso(step.fromH))
-      .lte("starts_at", iso(step.toH));
-    for (const a of appts || []) {
+    const appts = await citasDelTramo(step, iso);
+    for (const a of appts) {
       result.processed++;
       const phone = a.df_patients?.phone;
+      const yaConfirmoAsistencia = !!a.patient_confirmed_at;
       let sent = false;
       try {
-        // Solo tiene sentido recordar las que aún están pendientes de confirmar.
-        if (a.status !== "confirmed" && phone && wa.isConfigured()) {
+        // Solo se recuerda a quien todavía no ha dicho si viene.
+        if (!yaConfirmoAsistencia && phone && wa.isConfigured()) {
           await sendReminderMessage(wa, phone, a, plantillaPaso, infoPaso);
           result.sent++;
           sent = true;
@@ -1858,29 +1889,31 @@ async function runReminders() {
       } catch (e) {
         result.errors.push(`${a.id} (${step.label}): ${e.message}`);
       }
-      // Marca el tramo SOLO si el recordatorio se envió de verdad (o si ya está
-      // confirmada y no necesita aviso). Si no se pudo avisar, se deja para el
-      // próximo intento y NUNCA se autocancela sin haber avisado al paciente.
-      if (sent || a.status === "confirmed") {
+      // Marca el tramo SOLO si el recordatorio se envió de verdad (o si el paciente ya
+      // confirmó y no necesita aviso). Si no se pudo avisar, se deja para el próximo
+      // intento y NUNCA se autocancela sin haber avisado al paciente.
+      if (sent || yaConfirmoAsistencia) {
         await supabase.from("df_appointments").update({ [step.field]: new Date().toISOString() }).eq("id", a.id);
       }
     }
   }
 
-  // 2) Autocancelación de citas NO confirmadas (si está habilitada).
-  //    Requiere que ya se les enviara el recordatorio de 6h hace >1h.
+  // 2) Autocancelación de citas cuya ASISTENCIA nadie ha confirmado (si está habilitada).
+  //    Requiere que ya se les enviara el recordatorio de 6h hace >1h. Lo que cuenta es
+  //    que el paciente no haya dicho que viene: una cita validada por recepción a la que
+  //    el paciente nunca contestó sigue siendo un hueco en el aire.
   if (AUTO_CANCEL_ENABLED) {
     const graceISO = new Date(now - 3600000).toISOString();
-    const { data: toCancel } = await supabase
+    const { data: candidatas } = await supabase
       .from("df_appointments")
-      .select("id, notes")
-      .eq("status", "pending")
-      .is("confirmed_at", null)
+      .select("*")
+      .in("status", ["pending", "confirmed"])
       .not("reminder_6h_at", "is", null)
       .lt("reminder_6h_at", graceISO)
       .gt("starts_at", new Date(now).toISOString())
       .lte("starts_at", iso(AUTO_CANCEL_HOURS));
-    for (const a of toCancel || []) {
+    const toCancel = (candidatas || []).filter((a) => !a.patient_confirmed_at);
+    for (const a of toCancel) {
       await supabase.from("df_appointments").update({
         status: "cancelled",
         auto_cancelled: true,
@@ -1919,7 +1952,9 @@ app.get("/api/reminders", requireAuth, requireReception, async (_req, res) => {
     const cfg = await getReminderConfig();
     const { data, error } = await supabase
       .from("df_appointments")
-      .select("id, starts_at, status, confirmed_at, reminder_3d_at, reminder_1d_at, reminder_6h_at, auto_cancelled, df_patients(full_name, phone), df_professionals(name), df_treatments(name)")
+      // "*" en vez de columna a columna para que patient_confirmed_at llegue si la
+      // migración está hecha y no reviente si todavía no lo está.
+      .select("*, df_patients(full_name, phone), df_professionals(name), df_treatments(name)")
       .in("status", ["pending", "confirmed"])
       .gte("starts_at", new Date().toISOString())
       .order("starts_at", { ascending: true })
