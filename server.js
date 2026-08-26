@@ -1924,6 +1924,14 @@ async function runReminders() {
       result.cancelled++;
     }
   }
+
+  // 3) Limpieza del registro antiduplicados del webhook: pasada una semana ya no hay
+  //    reintento de Meta posible, así que esas filas solo ocupan sitio.
+  try {
+    const hace7dias = new Date(now - 7 * 86400000).toISOString();
+    await supabase.from("df_wa_processed").delete().lt("created_at", hace7dias);
+  } catch (e) { console.error("[reminders/limpieza-wa]", e.message); }
+
   return result;
 }
 
@@ -4217,6 +4225,64 @@ async function markCampaignInConversation(patientId, phone, campaignName) {
   } catch (_e) { /* no bloquea el envío */ }
 }
 
+// =============================================================
+// REINTENTOS DE META (mensajes duplicados)
+// -------------------------------------------------------------
+// Meta espera muy poco por el 200 del webhook, y un turno del asistente (llamar al
+// modelo, ejecutar herramientas, mirar la agenda) tarda bastante más. Al no recibir
+// el 200 a tiempo, Meta da la entrega por fallida y REENTREGA el mismo mensaje: el
+// paciente lo veía duplicado en Conversaciones y el bot le contestaba dos veces.
+//
+// Cada mensaje trae un identificador único de Meta (el "wamid"): la primera entrega
+// lo reclama en df_wa_processed y las repeticiones se descartan.
+// La tabla la crea sql/webhook-idempotente.sql.
+// =============================================================
+
+// Minutos tras los cuales una pasada a medias se da por perdida y se puede retomar.
+// Si la función se cortó por tiempo sin llegar a contestar, el reintento de Meta se
+// hace cargo en vez de dejar al paciente sin respuesta.
+const WA_RECLAMO_CADUCA_MIN = 3;
+
+// ¿El error es un choque de clave primaria? (23505 = unique_violation en Postgres)
+function esClaveDuplicada(error) {
+  if (!error) return false;
+  return String(error.code) === "23505" || /duplicate key|already exists/i.test(String(error.message || ""));
+}
+
+// ¿Le toca a ESTA entrega procesar el mensaje? Ante cualquier duda responde que sí:
+// contestar dos veces es molesto, pero dejar al paciente sin respuesta es peor. Por eso
+// un error que NO sea "ya existe" (p. ej. que la migración aún no se haya ejecutado) deja
+// pasar el mensaje y solo se anota en el log.
+async function reclamarMensajeWhatsapp(messageId) {
+  if (!messageId) return true;               // sin identificador no se puede deduplicar
+  const { error } = await supabase
+    .from("df_wa_processed").insert({ message_id: messageId, status: "processing" });
+  if (!error) return true;                   // primera entrega: es la nuestra
+  if (!esClaveDuplicada(error)) {
+    console.error("[wa dedupe]", error.message);
+    return true;
+  }
+  const { data: previo } = await supabase
+    .from("df_wa_processed").select("status, created_at").eq("message_id", messageId).maybeSingle();
+  if (!previo) return true;
+  if (previo.status === "done") return false;                    // ya se contestó
+  const edadMin = (Date.now() - Date.parse(previo.created_at)) / 60000;
+  if (!(edadMin >= WA_RECLAMO_CADUCA_MIN)) return false;         // se está atendiendo ahora
+  // La pasada anterior se quedó a medias: se retoma (y se resella para que dos
+  // reintentos simultáneos no la cojan los dos).
+  await supabase.from("df_wa_processed")
+    .update({ created_at: new Date().toISOString() }).eq("message_id", messageId);
+  return true;
+}
+
+async function marcarMensajeWhatsappHecho(messageId) {
+  if (!messageId) return;
+  const { error } = await supabase.from("df_wa_processed")
+    .update({ status: "done", done_at: new Date().toISOString() })
+    .eq("message_id", messageId);
+  if (error) console.error("[wa dedupe/done]", error.message);
+}
+
 app.post("/api/whatsapp/webhook", async (req, res) => {
   const wa = require("./lib/whatsapp");
   if (!wa.verifySignature(req.rawBody, req.get("x-hub-signature-256"))) {
@@ -4224,7 +4290,9 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
   }
   try {
     const { handleMessage, getOrCreateConversation, saveMessage } = require("./lib/bot");
-    for (const m of wa.parseIncoming(req.body)) {
+    // El cuerpo de cada mensaje va en su propia función para poder marcarlo como
+    // procesado pase lo que pase (antes eran 'continue' sueltos dentro del bucle).
+    const atenderMensaje = async (m) => {
       // 1) Botón "Aceptar" de la plantilla de consentimiento -> marca el consentimiento en el CRM.
       if (m.button && isMarketingConsentAccept(m.button)) {
         const r = await markMarketingConsentByPhone(m.from).catch(() => ({ ok: false }));
@@ -4237,7 +4305,7 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
           const conv = await getOrCreateConversation({ channel: "whatsapp", phone: m.from, name: m.name });
           await saveMessage(conv.id, "user", "✅ Aceptó recibir comunicaciones de marketing");
         } catch (_e) {}
-        continue;
+        return;
       }
       // 1b) Botón "No acepto" (o respuesta explícita de rechazo) -> queda marcado en
       //     su ficha para no volver a incluirle en ninguna campaña.
@@ -4253,7 +4321,7 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
           const conv = await getOrCreateConversation({ channel: "whatsapp", phone: m.from, name: m.name });
           await saveMessage(conv.id, "user", "🚫 No acepta recibir comunicaciones de marketing");
         } catch (_e) {}
-        continue;
+        return;
       }
       // 2) Botón "Leer más" -> envía el PDF con toda la información.
       if (m.button && isReadMoreButton(m.button)) {
@@ -4274,7 +4342,7 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
           await saveMessage(conv.id, "user", "📄 Pidió más información sobre el consentimiento de marketing");
           await saveMessage(conv.id, "assistant", enviado ? "📎 Enviado el PDF de consentimiento" : "🔗 Enviado el enlace al PDF de consentimiento");
         } catch (_e) {}
-        continue;
+        return;
       }
       // 3) "BAJA MARKETING": el paciente revoca el consentimiento. Tiene prioridad sobre
       //    el asistente (se lo prometemos al confirmarle el alta) y deja de recibir
@@ -4290,7 +4358,7 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
           await saveMessage(conv.id, "user", m.text);
           await saveMessage(conv.id, "assistant", "🚫 Baja de comunicaciones comerciales registrada");
         } catch (_e) {}
-        continue;
+        return;
       }
       // 4) Foto o documento del paciente: se descarga de Meta, se guarda en Supabase
       //    Storage y queda visible en la conversación del CRM. El bot acusa recibo
@@ -4309,7 +4377,7 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
           // (si no, respondería lo mismo dos o tres veces seguidas).
           if (await mediaBurst(conv.id)) {
             await saveMessage(conv.id, "user", text, url);
-            continue;
+            return;
           }
           const result = await handleMessage({ channel: "whatsapp", phone: m.from, name: m.name, text, imageUrl: url });
           if (result.reply) {
@@ -4319,7 +4387,7 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
           console.error("[wa media]", err.message);
           await wa.sendText(m.from, "He recibido su archivo, pero ha habido un problema al guardarlo. ¿Puede volver a enviarlo, por favor?").catch(() => {});
         }
-        continue;
+        return;
       }
       // 4b) Tras una campaña o el consentimiento el asistente NO se calla: sigue
       //     atendiendo al paciente. Lo único que cambia es el contexto — la marca que se
@@ -4328,7 +4396,7 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
       // 5) Resto de mensajes: flujo normal del asistente.
       if (!m.text) {
         await wa.sendText(m.from, "De momento solo puedo leer mensajes de texto, fotos y documentos. ¿Me lo escribe, por favor?").catch(() => {});
-        continue;
+        return;
       }
       let result;
       try {
@@ -4343,7 +4411,7 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
           const conv = await getOrCreateConversation({ channel: "whatsapp", phone: m.from, name: m.name });
           await saveMessage(conv.id, "assistant", `⚠️ El asistente no pudo responder (${err.message}). Se ha avisado al paciente de que le contestará una persona.`);
         } catch (_e) {}
-        continue;
+        return;
       }
       if (result.reply) {
         // Identifica que responde el asistente automático.
@@ -4352,6 +4420,18 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
       // Alta terminada: se le pide el consentimiento de marketing con su plantilla.
       if (result.sendConsentTemplate) {
         await sendConsentTemplateTo(m.from, result.conversation && result.conversation.id, result.conversation && result.conversation.customer_name);
+      }
+    };
+
+    for (const m of wa.parseIncoming(req.body)) {
+      // REINTENTOS DE META: si el 200 tarda (un turno del asistente tarda bastante
+      // más de lo que Meta espera), Meta vuelve a entregar el MISMO mensaje. Sin esto
+      // se guardaba dos veces en Conversaciones y el bot contestaba dos veces.
+      if (!(await reclamarMensajeWhatsapp(m.id))) continue;
+      try {
+        await atenderMensaje(m);
+      } finally {
+        await marcarMensajeWhatsappHecho(m.id);
       }
     }
   } catch (err) {
