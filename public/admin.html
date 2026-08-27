@@ -243,6 +243,7 @@ table tr.row-click { cursor: pointer; }
 .badge-done       { background: #E6F6F0; color: #2FB08C; }
 .badge-cancelled  { background: #FBE9EC; color: #D65B77; }
 .badge-no_show    { background: #FBF1E0; color: #C8871F; }
+.badge-avisa_no_viene { background: #FDE9E4; color: #C2562C; }
 .badge-active     { background: #E6F6F0; color: #2FB08C; }
 .badge-closed     { background: rgba(140,147,168,.15); color: #6B7186; }
 .badge-urgent     { background: #FBE9EC; color: #D65B77; }
@@ -256,23 +257,58 @@ table tr.row-click { cursor: pointer; }
 /* ===== AGENDA ===== */
 .agenda-controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 16px;
   padding: 13px 18px; border: 1px solid var(--line); border-radius: 12px; background: #fff; box-shadow: var(--shadow-md); }
-.agenda-header { position: relative; }
+/* z-index: la cabecera (con el calendario desplegable) va por encima de la barra
+   de filtros; las dos llevan animación de entrada, que crea contexto de apilado. */
+.agenda-header { position: relative; z-index: 20; }
 .agenda-header .week-nav { position: absolute; left: 50%; transform: translateX(-50%);
-  display: flex; align-items: center; gap: 8px; }
+  display: flex; align-items: center; gap: 8px; z-index: 50; }
 .agenda-header .week-nav #thisWeek { min-width: 168px; font-weight: 700; text-align: center; justify-content: center; letter-spacing: .3px; }
 .agenda-grid { display: grid; grid-template-columns: 60px repeat(var(--cols,5),1fr); gap: 1px;
   background: var(--line); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; box-shadow: var(--shadow-md); }
 .agenda-grid .head { background: #FBFBFD; padding: 8px 6px; text-align: center; font-size: 12px; font-weight: 700; color: var(--text-2); }
 .agenda-grid .hour { background: #fff; padding: 6px 6px 0; text-align: right; font-size: 11px; color: var(--text-3); font-variant-numeric: tabular-nums; }
 .agenda-grid .cell { background: #fff; min-height: 36px; position: relative; padding: 2px; display: flex; flex-direction: column; gap: 2px; }
-/* Estado base = cita SIN confirmar por recepción: gris. En cuanto se confirma pasa a
-   verde (.confirmed, más abajo), así el repaso diario se ve de un vistazo. */
-.appt { position: relative; background: #F0F1F5; border-left: 3px solid var(--accent-2); border-radius: 7px; padding: 3px 7px;
+/* CADA CITA VA DEL COLOR DE SU DOCTOR (el bloque entero, no solo la franja): así
+   se ve de un golpe de vista cómo está la agenda. El color sale de la ficha del
+   profesional (Profesionales → Color en agenda). Confirmada o no NO cambia el
+   color: las pendientes van rayadas y las confirmadas llevan ✓. */
+.appt { position: relative; background: var(--appt-bg, #EEF3FC); border-left: 4px solid var(--appt-color, var(--accent-2)); border-radius: 7px; padding: 3px 7px;
   font-size: 11px; line-height: 1.2; cursor: pointer; transition: filter .15s, transform .15s; overflow: hidden; }
 .appt:hover { filter: brightness(.98); transform: translateY(-1px); }
+/* Sin confirmar: mismo color del doctor, con un rayado suave por encima. */
+.appt.sin-confirmar { background-image: repeating-linear-gradient(135deg, rgba(255,255,255,.65) 0 5px, rgba(255,255,255,0) 5px 11px); }
+/* Primera visita: verde. Incidencia (urgencia, avisa que no viene, no vino): rojo.
+   (El color en sí lo pone el propio chip, que decide la prioridad.) */
+.appt.incidencia > strong { color: #A33636; }
 /* Cita antigua que se quedó sin paciente: se resalta para poder arreglarla. */
-.appt.no-patient { background: #FDF2F2; border-left-color: #E06666; }
+.appt.no-patient { --appt-bg: #FDF2F2; --appt-color: #E06666; }
 .appt.no-patient > strong { color: #B23A3A; }
+/* Arrastrar citas de un hueco a otro. */
+.appt[draggable="true"] { cursor: grab; }
+.appt.arrastrando { opacity: .45; }
+.ag-cell.drop-ok { background: #EAF5FF; box-shadow: inset 0 0 0 2px var(--accent-2); }
+/* Calendario desplegable del selector de fecha de la agenda. */
+.ag-cal { position: absolute; top: 44px; left: 50%; transform: translateX(-50%); z-index: 40; width: 260px;
+  background: #fff; border: 1px solid var(--line-2); border-radius: 12px; box-shadow: var(--shadow-lg, 0 12px 32px rgba(20,30,60,.18)); padding: 10px; }
+.ag-cal .cal-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin-bottom: 8px; font-size: 13px; }
+.ag-cal .cal-head .btn { padding: 3px 9px; }
+.ag-cal .cal-dow { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; margin-bottom: 4px; }
+.ag-cal .cal-dow span { text-align: center; font-size: 10.5px; font-weight: 800; color: var(--text-3); }
+.ag-cal .cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; }
+.ag-cal .cal-d { border: 0; background: #fff; border-radius: 7px; padding: 6px 0; font-size: 12.5px; color: var(--text);
+  cursor: pointer; font-variant-numeric: tabular-nums; }
+.ag-cal .cal-d:hover { background: #EAF0FB; }
+.ag-cal .cal-d.vacio { visibility: hidden; }
+.ag-cal .cal-d.finde { color: var(--text-3); }
+.ag-cal .cal-d.semana { background: #EAF0FB; font-weight: 700; }
+.ag-cal .cal-d.hoy { box-shadow: inset 0 0 0 2px var(--accent-2); font-weight: 800; }
+.ag-cal .cal-pie { margin-top: 8px; text-align: center; }
+.ag-cal .cal-pie .btn { width: 100%; padding: 6px 0; font-size: 12.5px; }
+/* Leyenda de colores de la agenda. */
+.ag-leyenda { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; margin: -6px 0 12px; }
+.ag-leyenda .lg { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--text-2); }
+.ag-leyenda .lg i { width: 13px; height: 13px; border-radius: 4px; display: inline-block; border: 1px solid rgba(0,0,0,.08); }
+.ag-leyenda .lg.rayada i { background-image: repeating-linear-gradient(135deg, rgba(255,255,255,.7) 0 3px, rgba(255,255,255,0) 3px 7px); }
 .appt-edit { position: absolute; top: 2px; right: 2px; width: 20px; height: 20px; padding: 0; display: inline-flex;
   align-items: center; justify-content: center; border: 0; border-radius: 6px; background: rgba(255,255,255,.75);
   color: var(--accent); cursor: pointer; opacity: 0; transition: opacity .12s; }
@@ -281,22 +317,7 @@ table tr.row-click { cursor: pointer; }
 .appt-edit:hover { background: #fff; }
 .appt strong { display: block; font-size: 11px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding-right: 16px; }
 .appt .meta { display: block; color: var(--text-3); font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-/* Estado de la cita de un vistazo:
-   gris = pendiente de recepción · verde con un tick = confirmada ·
-   verde con doble tick = el paciente además ha confirmado que viene. */
-.appt.confirmed { background: #E7F7F0; }
-.appt .tick { display: inline-flex; align-items: center; justify-content: center; min-width: 14px; height: 14px; padding: 0 3px; border-radius: 7px; background: var(--success); color: #fff; font-size: 9px; font-weight: 900; line-height: 1; margin-right: 3px; vertical-align: -2px; flex-shrink: 0; letter-spacing: -1px; }
-/* Doble tick sobre una cita AÚN sin confirmar por recepción: el paciente ya ha dicho
-   que viene, pero a recepción le queda validarla. Se marca apagado para que se note
-   que falta ese repaso y no se confunda con una cita ya cerrada. */
-.appt.attended:not(.confirmed) .tick { background: var(--text-3); }
-/* Botón de confirmar de la propia agenda (solo en las que están pendientes). */
-.appt-ok { position: absolute; top: 2px; right: 24px; width: 20px; height: 20px; padding: 0; display: inline-flex;
-  align-items: center; justify-content: center; border: 0; border-radius: 6px; background: rgba(255,255,255,.75);
-  color: var(--success); font-size: 12px; font-weight: 900; line-height: 1; cursor: pointer; opacity: 0; transition: opacity .12s; }
-.appt:hover .appt-ok { opacity: 1; }
-.appt-ok:hover { background: #fff; }
-.appt-ok:disabled { cursor: default; opacity: 1; }
+.appt .tick { display: inline-flex; align-items: center; justify-content: center; width: 14px; height: 14px; border-radius: 50%; background: var(--success); color: #fff; font-size: 9px; font-weight: 900; line-height: 1; margin-right: 3px; vertical-align: -2px; flex-shrink: 0; }
 
 /* ===== AGENDA por BOXES (3 columnas por día) ===== */
 /* Controles alineados: cada uno con su etiqueta encima y los campos a la misma altura. */
@@ -370,7 +391,9 @@ select option:disabled { color:#A9AEC0; }
   background-image:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5l5 5 5-5' fill='none' stroke='%238C93A8' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
   background-repeat:no-repeat; background-position:right 12px center; padding-right:34px; }
 input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); width:15px; height:15px; }
-.textarea { resize: vertical; }
+/* Los recuadros de texto CRECEN según se escribe (curso clínico, notas…): no se
+   queda el texto encerrado en dos líneas con una barra de scroll. */
+.textarea { resize: vertical; overflow-y: hidden; min-height: 64px; max-height: 60vh; transition: height .08s linear; }
 ::selection { background: rgba(85,122,198,.18); color: var(--text); }
 table td, .agenda-grid .hour { font-variant-numeric: tabular-nums; }
 .modal h3 { padding-bottom:12px; border-bottom:1px solid var(--line); }
@@ -759,7 +782,7 @@ const $modalRoot = document.getElementById("modalRoot");
 const $toastStack = document.getElementById("toastStack");
 
 const STATE_LABEL = { higiene: "Fase higiénica", reposicion: "Reposición de piezas", control: "Control" };
-const APPT_STATUS = { pending: "Pendiente", confirmed: "Confirmada", cancelled: "Cancelada", done: "Completada", no_show: "No vino" };
+const APPT_STATUS = { pending: "Pendiente", confirmed: "Confirmada", avisa_no_viene: "Avisa que no viene", cancelled: "Cancelada", done: "Completada", no_show: "No vino" };
 const WEEKDAY_LABEL = ["Lun","Mar","Mié","Jue","Vie","Sáb","Dom"];
 
 let cache = { professionals: [], treatments: [] };
@@ -1027,6 +1050,28 @@ $loginForm.addEventListener("submit", async (e) => {
   } catch (err) { $loginErr.textContent = err.message; $loginErr.style.display = "block"; }
 });
 document.getElementById("logoutBtn").addEventListener("click", logout);
+
+// ---------------- Recuadros de texto que crecen al escribir ----------------
+// Todo <textarea> se ajusta a lo que se escribe (y al abrirse, a lo que ya tiene),
+// para poder releer lo escrito sin scroll. Se aplica a los de ahora y a los que
+// aparezcan luego (modales), sin tener que acordarse en cada pantalla.
+function ajustarAlto(el) {
+  if (!el || el.tagName !== "TEXTAREA") return;
+  el.style.height = "auto";
+  const tope = Math.round(window.innerHeight * 0.6);
+  el.style.height = Math.min(el.scrollHeight + 2, tope) + "px";
+  el.style.overflowY = el.scrollHeight + 2 > tope ? "auto" : "hidden";
+}
+function ajustarAltoTodos(raiz = document) {
+  (raiz.querySelectorAll ? raiz.querySelectorAll("textarea") : []).forEach(ajustarAlto);
+}
+document.addEventListener("input", (e) => { if (e.target && e.target.tagName === "TEXTAREA") ajustarAlto(e.target); });
+new MutationObserver((muts) => {
+  for (const m of muts) for (const n of m.addedNodes) {
+    if (n.nodeType !== 1) continue;
+    if (n.tagName === "TEXTAREA") ajustarAlto(n); else ajustarAltoTodos(n);
+  }
+}).observe(document.documentElement, { childList: true, subtree: true });
 
 // ---------------- Router ----------------
 window.addEventListener("hashchange", () => route(location.hash.replace(/^#/, "") || "dashboard"));
@@ -1488,7 +1533,7 @@ async function renderReminders() {
     if (!appointments.length) {
       document.getElementById("remCard").innerHTML = `<div class="empty-state">
         No hay próximas citas.<br>
-        <small>Los recordatorios se envían automáticamente ${cols[0]}, ${cols[1]} y ${cols[2]} antes de cada cita, hasta que el paciente confirme que va a venir.</small>
+        <small>Los recordatorios se envían automáticamente ${cols[0]}, ${cols[1]} y ${cols[2]} antes de cada cita, hasta que el paciente confirme.</small>
       </div>`;
       return;
     }
@@ -1497,36 +1542,27 @@ async function renderReminders() {
         <thead><tr>
           <th>Paciente</th><th>Cita</th><th>Tiempo restante</th>
           <th>${cols[0]} antes</th><th>${cols[1]} antes</th><th>${cols[2]} antes</th>
-          <th>Asistencia</th><th></th>
+          <th>Confirmada</th><th></th>
         </tr></thead>
         <tbody>
           ${appointments.map(a => {
-            // Lo que se sigue aquí es si el PACIENTE ha dicho que viene: es lo que corta
-            // la cadencia de avisos. Que recepción haya validado la cita es otra cosa y
-            // se muestra debajo, en pequeño, porque también le interesa a recepción.
-            const viene = !!a.patient_confirmed_at;
-            const validada = a.status === "confirmed";
+            const confirmada = a.status === "confirmed" || a.confirmed_at;
             return `<tr>
               <td><strong>${escapeHtml(a.df_patients?.full_name || "—")}</strong>
                 <div style="color:var(--text-3);font-size:12px">${escapeHtml(a.df_treatments?.name || "")}${a.df_professionals?.name ? " · " + escapeHtml(a.df_professionals.name.split(" ")[0]) : ""}</div></td>
-              <td>${fmtDateTime(a.starts_at)}
-                <div style="color:var(--text-3);font-size:12px">${validada ? "Cita confirmada" : "Pendiente de confirmar"}</div></td>
+              <td>${fmtDateTime(a.starts_at)}</td>
               <td>${tiempoRestante(a.starts_at)}</td>
               <td>${sentCell(a.reminder_3d_at)}</td>
               <td>${sentCell(a.reminder_1d_at)}</td>
               <td>${sentCell(a.reminder_6h_at)}</td>
-              <td>${viene
-                ? `<span class="badge badge-confirmed" title="Confirmada el ${escapeHtml(fmtDateTime(a.patient_confirmed_at))}">Viene</span>`
-                : '<span class="badge badge-pending">Sin respuesta</span>'}</td>
+              <td>${confirmada ? '<span class="badge badge-confirmed">Sí</span>' : '<span class="badge badge-pending">No</span>'}</td>
               <td><button class="chip-btn" onclick="sendReminder('${a.id}', this)">Enviar recordatorio</button></td>
             </tr>`;
           }).join("")}
         </tbody>
       </table>
       <div class="mini-note" style="margin-top:12px">
-        Aquí se sigue la <strong>confirmación de asistencia del paciente</strong>: los recordatorios
-        (${cols[0]}, ${cols[1]} y ${cols[2]} antes) se envían solos hasta que contesta que viene.
-        Cuando confirma, su cita pasa a doble tick en la agenda.
+        Los recordatorios (${cols[0]}, ${cols[1]} y ${cols[2]} antes) se envían solos hasta que el paciente confirme.
         "Enviar recordatorio" lo manda al instante por WhatsApp.
       </div>
     `;
@@ -1816,58 +1852,64 @@ function slotLabel(m) { return `${Math.floor(m / 60)}:${String(m % 60).padStart(
 function sameCalendarDay(a, b) {
   return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
 }
+// Un color en versión "fondo": el mismo tono del doctor, aclarado sobre blanco.
+function tinteAgenda(hex, mezcla = 0.22) {
+  const m = /^#?([0-9a-f]{6})$/i.exec(String(hex || "").trim());
+  if (!m) return "#EEF3FC";
+  const n = parseInt(m[1], 16);
+  const r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
+  const mez = (c) => Math.round(255 - (255 - c) * mezcla);
+  return `rgb(${mez(r)},${mez(g)},${mez(b)})`;
+}
+// ¿Es una "incidencia"? (urgencias, avisos de que no viene, faltas): van en rojo.
+const AG_INCIDENCIAS = ["avisa_no_viene", "no_show", "cancelled"];
+function esIncidenciaCita(a) {
+  return !!a.is_urgent || AG_INCIDENCIAS.includes(a.status);
+}
 // Chip de una cita (reutilizado en todas las vistas de la agenda).
-// Una cita se lee de un vistazo por su color y sus ticks:
-//   · GRIS, sin tick        -> el bot la agendó y recepción todavía no la ha validado.
-//   · VERDE, un tick        -> recepción la ha confirmado.
-//   · VERDE, doble tick     -> además el paciente ha confirmado que va a venir.
-//   · GRIS, doble tick gris -> el paciente ya ha dicho que viene, pero la cita sigue
-//                              pendiente de que recepción la valide (avisa a recepción
-//                              de que le queda ese repaso).
-function agendaApptChip(a) {
+function agendaApptChip(a, arrastrable = false) {
   const color = a.df_professionals?.color || "#9ca3af";
   const confirmed = a.status === "confirmed";
-  const asistencia = !!a.patient_confirmed_at;
   const pid = a.patient_id || a.df_patients?.id || "";
   // Citas antiguas que se quedaron sin paciente (su ficha se borró): se marcan para que
   // recepción las arregle con el lápiz. Las nuevas ya no pueden crearse sin paciente.
   const nombre = a.df_patients?.full_name || "";
   const sinPaciente = !nombre;
-  const tick = asistencia
-    ? `<span class="tick double" title="El paciente ha confirmado que viene">✓✓</span>`
-    : (confirmed ? `<span class="tick" title="Cita confirmada por recepción">✓</span>` : "");
-  // Las citas del bot llevan su propio botón para validarlas sin abrir la ficha: es el
-  // repaso diario de recepción y hacerlo cita por cita desde el lápiz era un engorro.
-  const btnConfirmar = (!confirmed && !sinPaciente)
-    ? `<button class="appt-ok" title="Confirmar esta cita" onclick="event.stopPropagation(); confirmarCitaAgenda('${a.id}', this)">✓</button>`
-    : "";
+  const incidencia = esIncidenciaCita(a);
+  // Prioridad del color: incidencia (rojo) > primera visita (verde) > su doctor.
+  const colorBloque = incidencia ? "#D64545" : (a.is_first_visit ? "#2FB08C" : color);
+  const clases = ["appt"];
+  if (confirmed) clases.push("confirmed"); else clases.push("sin-confirmar");
+  if (a.is_first_visit && !incidencia) clases.push("primera-visita");
+  if (incidencia) clases.push("incidencia");
+  if (sinPaciente) clases.push("no-patient");
+  const estado = confirmed ? "confirmada" : (APPT_STATUS[a.status] || "pendiente de confirmar").toLowerCase();
   const titulo = sinPaciente
     ? "Esta cita se quedó sin paciente: ábrela y asígnale uno"
-    : (confirmed
-        ? (asistencia ? "Cita confirmada · el paciente ha confirmado que viene" : "Cita confirmada por recepción")
-        : (asistencia ? "El paciente ya ha confirmado que viene, pero la cita sigue pendiente de confirmar" : "Pendiente de confirmar por recepción"));
-  return `<div class="appt${confirmed ? " confirmed" : ""}${asistencia ? " attended" : ""}${sinPaciente ? " no-patient" : ""}" style="border-left-color:${color}" ondblclick="${pid ? `location.hash='patient/${pid}'` : `openAppointmentModal('${a.id}')`}" title="${escapeHtml(titulo)}">
-    ${btnConfirmar}
+    : `${nombre} · ${a.df_treatments?.name || "—"} · ${a.df_professionals?.name || "sin profesional"} · ${estado}. Doble clic para abrir la ficha; arrástrala para cambiarla de hueco.`;
+  const dur = Math.max(15, Math.round((Date.parse(a.ends_at) - Date.parse(a.starts_at)) / 60000) || 30);
+  return `<div class="${clases.join(" ")}" style="--appt-color:${colorBloque};--appt-bg:${tinteAgenda(colorBloque)}"
+    ${arrastrable ? `draggable="true" data-appt="${a.id}" data-dur="${dur}"` : ""}
+    ondblclick="${pid ? `location.hash='patient/${pid}'` : `openAppointmentModal('${a.id}')`}" title="${escapeHtml(titulo)}">
     <button class="appt-edit" title="Ver/editar cita" onclick="event.stopPropagation(); openAppointmentModal('${a.id}')">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
     </button>
-    <strong>${tick}${fmtTime(a.starts_at)} · ${sinPaciente ? "⚠ Asignar paciente" : escapeHtml(nombre)}</strong>
+    <strong>${confirmed ? '<span class="tick">✓</span>' : ''}${fmtTime(a.starts_at)} · ${sinPaciente ? "⚠ Asignar paciente" : escapeHtml(nombre)}</strong>
     <span class="meta">${escapeHtml(a.df_treatments?.name || "—")} · ${escapeHtml(a.df_professionals?.name?.split(" ")[0] || "")}</span>
   </div>`;
 }
-
-// Confirma una cita desde la propia agenda (el repaso de las que ha dado el bot).
-window.confirmarCitaAgenda = async function (id, btn) {
-  if (btn) { btn.disabled = true; btn.textContent = "…"; }
-  try {
-    await api(`/api/appointments/${id}`, { method: "PATCH", body: { status: "confirmed" } });
-    toast("Cita confirmada", "success");
-    renderAgenda();
-  } catch (err) {
-    toast(err.message, "error");
-    if (btn) { btn.disabled = false; btn.textContent = "✓"; }
-  }
-};
+// Leyenda de colores: qué doctor es cada color y qué significan verde/rojo/rayado.
+function agendaLeyenda() {
+  const pros = (cache.professionals || []).filter((p) => p.active !== false);
+  const chip = (color, texto, clase = "") =>
+    `<span class="lg ${clase}"><i style="background:${tinteAgenda(color, .55)};border-color:${color}"></i>${escapeHtml(texto)}</span>`;
+  return `<div class="ag-leyenda">
+    ${pros.map((p) => chip(p.color || "#9ca3af", p.name.split(" ")[0])).join("")}
+    ${chip("#2FB08C", "1ª visita")}${chip("#D64545", "Incidencia")}
+    <span class="lg rayada"><i style="background:${tinteAgenda("#8C93A8", .55)};border-color:#8C93A8"></i>Sin confirmar</span>
+    <span class="lg"><span class="tick">✓</span>Confirmada</span>
+  </div>`;
+}
 // Construye la rejilla de UNA tanda de días (cada día con 3 columnas: Box 1/2/3 por gabinete).
 const AG_NBOX = 3;
 // Profesionales BLOQUEADOS un día concreto (los que recepción marca en Profesionales →
@@ -1928,10 +1970,12 @@ function buildAgendaGrid(days, appts, range) {
   }
   slots.forEach((m) => {
     html += `<div class="ag-hour">${slotLabel(m)}</div>`;
-    days.forEach((_, di) => {
+    days.forEach((d, di) => {
+      const dia = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
       for (let b = 0; b < AG_NBOX; b++) {
         const list = cells[di][b][m] || [];
-        html += `<div class="ag-cell${b === 0 ? " ag-daystart" : ""}">${list.map(agendaApptChip).join("")}</div>`;
+        // data-* : el hueco al que va a parar una cita arrastrada hasta aquí.
+        html += `<div class="ag-cell${b === 0 ? " ag-daystart" : ""}" data-fecha="${dia}" data-min="${m}" data-box="${b + 1}">${list.map((a) => agendaApptChip(a, true)).join("")}</div>`;
       }
     });
   });
@@ -1945,6 +1989,86 @@ function startOfWeek(d) {
   date.setDate(date.getDate() + diff);
   date.setHours(0,0,0,0);
   return date;
+}
+
+// ---- Calendario desplegable de la agenda -----------------------------------
+// Pulsando el mes (p. ej. "AGOSTO") se abre un calendario y se salta directo al
+// día que se quiera, en vez de ir avanzando semana a semana con las flechas.
+function toggleCalendarioAgenda() {
+  const caja = document.getElementById("agCalendario");
+  if (!caja) return;
+  if (caja.innerHTML) { caja.innerHTML = ""; return; }
+  const base = agendaState.view === "diario" ? agendaState.dayStart
+    : agendaState.view === "mensual" ? agendaState.monthAnchor : agendaState.weekStart;
+  agendaState.calMes = new Date((base || new Date()).getFullYear(), (base || new Date()).getMonth(), 1);
+  pintarCalendarioAgenda();
+  // Un clic fuera lo cierra.
+  setTimeout(() => document.addEventListener("click", cerrarCalendarioAgenda, { once: true }), 0);
+}
+function cerrarCalendarioAgenda(e) {
+  const caja = document.getElementById("agCalendario");
+  if (!caja) return;
+  if (e && caja.contains(e.target)) { document.addEventListener("click", cerrarCalendarioAgenda, { once: true }); return; }
+  caja.innerHTML = "";
+}
+function pintarCalendarioAgenda() {
+  const caja = document.getElementById("agCalendario");
+  if (!caja) return;
+  const mes = agendaState.calMes;
+  const primero = new Date(mes.getFullYear(), mes.getMonth(), 1);
+  const diasMes = new Date(mes.getFullYear(), mes.getMonth() + 1, 0).getDate();
+  const desplaz = (primero.getDay() + 6) % 7;       // 0 = lunes
+  const hoy = new Date(); hoy.setHours(0, 0, 0, 0);
+  const activo = agendaState.view === "diario" ? agendaState.dayStart : agendaState.weekStart;
+  const semanaActiva = startOfWeek(activo || hoy).getTime();
+  let celdas = "";
+  for (let i = 0; i < desplaz; i++) celdas += `<span class="cal-d vacio"></span>`;
+  for (let d = 1; d <= diasMes; d++) {
+    const dia = new Date(mes.getFullYear(), mes.getMonth(), d);
+    const finde = dia.getDay() === 0 || dia.getDay() === 6;
+    const clases = ["cal-d"];
+    if (finde) clases.push("finde");
+    if (dia.getTime() === hoy.getTime()) clases.push("hoy");
+    if (startOfWeek(dia).getTime() === semanaActiva) clases.push("semana");
+    celdas += `<button class="${clases.join(" ")}" data-dia="${mes.getFullYear()}-${String(mes.getMonth() + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}">${d}</button>`;
+  }
+  caja.innerHTML = `<div class="ag-cal">
+    <div class="cal-head">
+      <button class="btn" data-mes="-1" title="Mes anterior">‹</button>
+      <strong>${(() => { const t = mes.toLocaleDateString("es-ES", { month: "long", year: "numeric" }); return t.charAt(0).toUpperCase() + t.slice(1); })()}</strong>
+      <button class="btn" data-mes="1" title="Mes siguiente">›</button>
+    </div>
+    <div class="cal-dow">${["L", "M", "X", "J", "V", "S", "D"].map((x) => `<span>${x}</span>`).join("")}</div>
+    <div class="cal-grid">${celdas}</div>
+    <div class="cal-pie"><button class="btn" id="agToday" title="Volver a la semana de hoy">Ir a hoy</button></div>
+  </div>`;
+  caja.querySelectorAll("[data-mes]").forEach((b) => { b.onclick = (e) => {
+    e.stopPropagation();
+    agendaState.calMes = new Date(agendaState.calMes.getFullYear(), agendaState.calMes.getMonth() + Number(b.dataset.mes), 1);
+    pintarCalendarioAgenda();
+  }; });
+  caja.querySelectorAll(".cal-d[data-dia]").forEach((b) => { b.onclick = (e) => {
+    e.stopPropagation();
+    irADiaAgenda(b.dataset.dia);
+  }; });
+  const hoyBtn = caja.querySelector("#agToday");
+  if (hoyBtn) hoyBtn.onclick = (e) => {
+    e.stopPropagation();
+    const t = new Date();
+    irADiaAgenda(`${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, "0")}-${String(t.getDate()).padStart(2, "0")}`);
+  };
+}
+// Salta la agenda al día elegido (en semanal muestra su semana; en mensual, su mes).
+function irADiaAgenda(diaISO) {
+  const [y, m, d] = String(diaISO).split("-").map(Number);
+  const dia = new Date(y, m - 1, d);
+  dia.setHours(0, 0, 0, 0);
+  agendaState.weekStart = startOfWeek(dia);
+  agendaState.dayStart = dia;
+  agendaState.monthAnchor = new Date(y, m - 1, 1);
+  const caja = document.getElementById("agCalendario");
+  if (caja) caja.innerHTML = "";
+  renderAgenda();
 }
 
 // Etiqueta del mes de la semana visible (lunes–viernes). Si la semana cruza de
@@ -2275,8 +2399,9 @@ async function renderAgenda() {
       <h2>Agenda</h2>
       <div class="week-nav">
         <button class="btn" id="agPrev" title="Anterior">‹</button>
-        <button class="btn" id="agToday" title="Volver a hoy" style="min-width:180px;text-transform:capitalize">${navLabel}</button>
+        <button class="btn" id="agPick" title="Pulsa para abrir el calendario e ir directo a un día" style="min-width:180px;text-transform:capitalize">${navLabel} ▾</button>
         <button class="btn" id="agNext" title="Siguiente">›</button>
+        <div id="agCalendario"></div>
       </div>
       <div class="actions">
         <button class="btn" id="importApptBtn" title="Traer al CRM las citas que ya están agendadas en otro programa (Cliniwin)">Importar citas</button>
@@ -2324,13 +2449,7 @@ async function renderAgenda() {
   };
   document.getElementById("agPrev").onclick = () => shift(-1);
   document.getElementById("agNext").onclick = () => shift(1);
-  document.getElementById("agToday").onclick = () => {
-    const t = new Date();
-    agendaState.weekStart = startOfWeek(t);
-    const d0 = new Date(t); d0.setHours(0, 0, 0, 0); agendaState.dayStart = d0;
-    agendaState.monthAnchor = new Date(t);
-    renderAgenda();
-  };
+  document.getElementById("agPick").onclick = (e) => { e.stopPropagation(); toggleCalendarioAgenda(); };
   document.getElementById("newApptBtn").onclick = () => openAppointmentModal();
   document.getElementById("importApptBtn").onclick = () => openImportarCitasModal();
   document.getElementById("proFilter").onchange = (e) => { agendaState.professionalId = e.target.value; renderAgenda(); };
@@ -2356,8 +2475,74 @@ async function renderAgenda() {
         : "";
       return wlabel + buildAgendaGrid(days, appointments, range);
     }).join('<div style="height:16px"></div>');
-    document.getElementById("agendaContainer").innerHTML = `<div class="ag-wrap">${gridsHtml}</div>`;
+    document.getElementById("agendaContainer").innerHTML = agendaLeyenda() + `<div class="ag-wrap">${gridsHtml}</div>`;
+    activarArrastreCitas(document.getElementById("agendaContainer"), appointments);
   } catch (err) { toast(err.message, "error"); }
+}
+
+// ---- Arrastrar citas de un hueco a otro (y copiarlas con Ctrl/⌘) ----------
+// Recepción mueve la cita soltándola en otro día, hora o box, sin volver a
+// escribirla. El servidor revalida el hueco: si no cabe, se avisa y no se toca nada.
+function activarArrastreCitas(cont, appointments) {
+  if (!cont) return;
+  const porId = Object.fromEntries((appointments || []).map((a) => [a.id, a]));
+  let arrastrada = null, copiar = false;
+
+  cont.querySelectorAll(".appt[draggable='true']").forEach((el) => {
+    el.addEventListener("dragstart", (e) => {
+      arrastrada = { id: el.dataset.appt, dur: Number(el.dataset.dur) || 30 };
+      copiar = !!(e.ctrlKey || e.metaKey || e.altKey);
+      el.classList.add("arrastrando");
+      if (e.dataTransfer) { e.dataTransfer.effectAllowed = "copyMove"; try { e.dataTransfer.setData("text/plain", el.dataset.appt); } catch (_e) {} }
+    });
+    el.addEventListener("dragend", () => { el.classList.remove("arrastrando"); arrastrada = null; });
+  });
+
+  cont.querySelectorAll(".ag-cell").forEach((celda) => {
+    celda.addEventListener("dragover", (e) => {
+      if (!arrastrada) return;
+      e.preventDefault();
+      copiar = !!(e.ctrlKey || e.metaKey || e.altKey);
+      if (e.dataTransfer) e.dataTransfer.dropEffect = copiar ? "copy" : "move";
+      celda.classList.add("drop-ok");
+    });
+    celda.addEventListener("dragleave", () => celda.classList.remove("drop-ok"));
+    celda.addEventListener("drop", async (e) => {
+      e.preventDefault();
+      celda.classList.remove("drop-ok");
+      const info = arrastrada; arrastrada = null;
+      if (!info) return;
+      const cita = porId[info.id];
+      const min = Number(celda.dataset.min) || 0;
+      const inicio = new Date(`${celda.dataset.fecha}T${String(Math.floor(min / 60)).padStart(2, "0")}:${String(min % 60).padStart(2, "0")}:00`);
+      // Soltarla donde ya estaba: no se hace nada.
+      if (cita && Date.parse(cita.starts_at) === inicio.getTime() && Number(cita.cabinet || 0) === Number(celda.dataset.box)) return;
+      const fin = new Date(inicio.getTime() + info.dur * 60000);
+      const cuando = inicio.toLocaleString("es-ES", { weekday: "long", day: "numeric", month: "long", hour: "2-digit", minute: "2-digit" });
+      const quien = cita?.df_patients?.full_name || "la cita";
+      const duplicar = copiar || e.ctrlKey || e.metaKey || e.altKey;
+      if (!confirm(`${duplicar ? "Copiar" : "Mover"} ${quien} al ${cuando} (Box ${celda.dataset.box})?`)) return;
+      try {
+        if (duplicar) {
+          await api("/api/appointments", { method: "POST", body: {
+            patient_id: cita?.patient_id || cita?.df_patients?.id || null,
+            professional_id: cita?.professional_id || null,
+            treatment_id: cita?.treatment_id || null,
+            starts_at: inicio.toISOString(), ends_at: fin.toISOString(),
+            cabinet: Number(celda.dataset.box), is_first_visit: !!cita?.is_first_visit,
+            notes: cita?.notes || null,
+          } });
+          toast("Cita copiada al nuevo hueco", "success");
+        } else {
+          await api(`/api/appointments/${info.id}`, { method: "PATCH", body: {
+            starts_at: inicio.toISOString(), ends_at: fin.toISOString(), cabinet: Number(celda.dataset.box),
+          } });
+          toast("Cita movida", "success");
+        }
+        renderAgenda();
+      } catch (err) { toast(err.message, "error"); }
+    });
+  });
 }
 
 // ====================================================================
@@ -2999,7 +3184,7 @@ async function openAppointmentModal(id, prefill) {
     <div class="row">
       <div class="field"><label>Estado</label>
         <select class="select" id="apStatus">
-          ${Object.entries(APPT_STATUS).map(([k,v]) => `<option value="${k}" ${(existing ? existing.status===k : k==="confirmed")?"selected":""}>${v}</option>`).join("")}
+          ${Object.entries(APPT_STATUS).map(([k,v]) => `<option value="${k}" ${existing?.status===k?"selected":""}>${v}</option>`).join("")}
         </select>
       </div>
       <div class="field"><label>Marcadores</label>
