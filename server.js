@@ -28,6 +28,7 @@ function madridWeekdayAndTime(iso) {
   return { weekday: WD[m.weekday], hhmm: `${hh}:${m.minute}` };
 }
 const { ensurePaymentForAppointment, clearPendingPaymentForAppointment } = require("./lib/billing");
+const { getSwitches, setSwitch } = require("./lib/switches");
 // Las dos confirmaciones de una cita: la de recepción (status) y la de asistencia del
 // paciente (patient_confirmed_at). Ver lib/citas.js.
 const { updateAppointment, marcarAsistencia, RESET_AL_MOVER } = require("./lib/citas");
@@ -1853,6 +1854,12 @@ async function runReminders() {
   const iso = (h) => new Date(now + h * 3600000).toISOString();
   const result = { sent: 0, cancelled: 0, processed: 0, errors: [], autoCancelEnabled: AUTO_CANCEL_ENABLED };
 
+  // Recordatorios APAGADOS (interruptor del panel o REMINDERS_ENABLED=false): el cron
+  // sigue pasando cada día, pero no se envía ni se cancela nada hasta que se enciendan.
+  if (!(await getSwitches()).reminders) {
+    return { ...result, skipped: true, reason: "Los recordatorios automáticos están en pausa." };
+  }
+
   const { offsets, templates } = await getReminderConfig();
   const steps = buildReminderSteps(offsets);
   // Cada recordatorio puede tener SU plantilla (el aviso de 6 h es más contundente que
@@ -1950,6 +1957,31 @@ app.get("/api/cron/reminders", async (req, res) => {
     return res.json({ ok: true, ...result });
   } catch (err) {
     console.error("[cron/reminders]", err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ---- Interruptores generales (asistente y recordatorios) --------------------
+// Sirven para dejar el bot y/o los recordatorios APAGADOS hasta nuevo aviso, sin
+// desplegar nada: el CRM sigue funcionando igual y los mensajes de los pacientes se
+// siguen guardando en Conversaciones para contestarlos a mano.
+app.get("/api/switches", requireAuth, async (_req, res) => {
+  try {
+    return res.json(await getSwitches({ fresh: true }));
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+app.patch("/api/switches", requireAuth, requireReception, async (req, res) => {
+  try {
+    const body = req.body || {};
+    let estado = await getSwitches({ fresh: true });
+    for (const nombre of ["bot", "reminders"]) {
+      if (typeof body[nombre] === "boolean") estado = await setSwitch(nombre, body[nombre]);
+    }
+    return res.json(estado);
+  } catch (err) {
     return res.status(500).json({ error: err.message });
   }
 });
@@ -4293,6 +4325,11 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
     // El cuerpo de cada mensaje va en su propia función para poder marcarlo como
     // procesado pase lo que pase (antes eran 'continue' sueltos dentro del bucle).
     const atenderMensaje = async (m) => {
+      // ¿Está el asistente encendido? Con el interruptor en pausa, los mensajes se
+      // guardan igual en Conversaciones (recepción contesta a mano) pero NO se manda
+      // ninguna respuesta automática. Las bajas de marketing y los botones del
+      // consentimiento sí siguen funcionando: son un compromiso legal (RGPD).
+      const botOn = await getSwitches().then((s) => s.bot).catch(() => true);
       // 1) Botón "Aceptar" de la plantilla de consentimiento -> marca el consentimiento en el CRM.
       if (m.button && isMarketingConsentAccept(m.button)) {
         const r = await markMarketingConsentByPhone(m.from).catch(() => ({ ok: false }));
@@ -4385,7 +4422,7 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
           }
         } catch (err) {
           console.error("[wa media]", err.message);
-          await wa.sendText(m.from, "He recibido su archivo, pero ha habido un problema al guardarlo. ¿Puede volver a enviarlo, por favor?").catch(() => {});
+          if (botOn) await wa.sendText(m.from, "He recibido su archivo, pero ha habido un problema al guardarlo. ¿Puede volver a enviarlo, por favor?").catch(() => {});
         }
         return;
       }
@@ -4395,7 +4432,7 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
       //     aviso (lo gestiona loadHistory en lib/bot.js).
       // 5) Resto de mensajes: flujo normal del asistente.
       if (!m.text) {
-        await wa.sendText(m.from, "De momento solo puedo leer mensajes de texto, fotos y documentos. ¿Me lo escribe, por favor?").catch(() => {});
+        if (botOn) await wa.sendText(m.from, "De momento solo puedo leer mensajes de texto, fotos y documentos. ¿Me lo escribe, por favor?").catch(() => {});
         return;
       }
       let result;
